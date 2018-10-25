@@ -2,18 +2,19 @@
 # @Author: lidong
 # @Date:   2018-03-18 16:31:14
 # @Last Modified by:   yulidong
-# @Last Modified time: 2018-08-21 16:06:45
+# @Last Modified time: 2018-10-22 21:25:23
 
 import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 
-def cluster_loss(feature,segment,lvar=0.16,dis=0.7):
+def cluster_loss(feature,segment,lvar=0.16,dis=0.64):
     lvar=torch.tensor(lvar).float().cuda()
     dis=torch.tensor(dis).float().cuda()
     #segment=torch.squeeze(segment)
     instance_num=torch.max(segment)
+    #print(instance_num)
     ones=torch.ones_like(segment).float()
     zeros=torch.zeros_like(segment).float()
     mean=[]
@@ -24,6 +25,8 @@ def cluster_loss(feature,segment,lvar=0.16,dis=0.7):
         mask_r=torch.where(segment==i,ones,zeros)
         feature_r=feature*mask_r
         count=torch.sum(mask_r)
+        if count==0:
+            count=1
         mean_r=torch.sum(torch.sum(feature_r,dim=-1),dim=-1)/count
         #mean_r shape N*C
         mean_r_volume=mean_r.view(mean_r.shape[0],mean_r.shape[1],1,1).expand(-1,-1,feature.shape[-2],feature.shape[-1])
@@ -37,14 +40,14 @@ def cluster_loss(feature,segment,lvar=0.16,dis=0.7):
             loss_var+=torch.sum(torch.pow(torch.clamp(loss_var_r,min=0),2))/count
         #var_r=torch.sum(var_map)/count
         #var.append(var_r)
-    loss_var/=instance_num.float().cuda()
+    loss_var=loss_var/instance_num.float().cuda()
     mean=torch.stack(mean)
     #mean shape instance_num*N*C
     #var=torch.mean(torch.stack(var))
     #mean1-mean1
     #mean2-mean1
     #mean3-mean1
-    #mean1-mean2
+    #mean1-mean2e
     #mean2-mean2
     #mean3-mean2
     #and mean123-mean3
@@ -58,6 +61,10 @@ def cluster_loss(feature,segment,lvar=0.16,dis=0.7):
     loss_dis=torch.sum(torch.where(dis_map==zeros,dis_map,torch.pow(torch.clamp(2*dis-dis_map,min=0),2)))/(instance_num*instance_num-instance_num)
     #with mean shape instance_num*n*c
     loss_reg=torch.mean(torch.norm(mean,dim=-1))
+    if torch.isnan(loss_var):
+        print(loss_var,loss_dis,loss_reg)
+        print(instance_num,count)
+        exit()
     #exit()
     return loss_var,loss_dis,loss_reg
     #add the geometrical distance loss

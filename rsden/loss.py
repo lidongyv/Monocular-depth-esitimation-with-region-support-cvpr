@@ -2,7 +2,7 @@
 # @Author: lidong
 # @Date:   2018-03-18 16:31:14
 # @Last Modified by:   yulidong
-# @Last Modified time: 2018-08-07 22:36:47
+# @Last Modified time: 2018-10-23 15:18:23
 
 import torch
 import numpy as np
@@ -208,8 +208,24 @@ def cross_entropy2d(input, target, weight=None, size_average=True):
     return loss
 def l1(input, target, weight=None, size_average=True):
     target=torch.reshape(target,(input.shape))
-    loss=nn.MSELoss()
-    relation=torch.sqrt(loss(input,target))
+    loss=torch.nn.L1Loss()
+    relation=loss(input,target)
+    #mean=torch.abs(torch.mean(input)-torch.mean(target))
+    #output=relation+0.2*mean
+    return relation
+def smooth_l1(input, target, weight=None, size_average=True):
+    target=torch.reshape(target,(input.shape))
+    loss=torch.nn.SmoothL1Loss()
+    relation=loss(input,target)
+    #mean=torch.abs(torch.mean(input)-torch.mean(target))
+    #output=relation+0.2*mean
+    return relation
+def smooth_logl1(input, target, weight=None, size_average=True):
+    target=torch.reshape(target,(input.shape))
+    input=torch.log10(input+1e-12) 
+    target=torch.log10(target+1e-12) 
+    loss=torch.nn.SmoothL1Loss()
+    relation=loss(input,target)
     #mean=torch.abs(torch.mean(input)-torch.mean(target))
     #output=relation+0.2*mean
     return relation
@@ -221,6 +237,7 @@ def l2(input, target, weight=None, size_average=True):
 
     return relation
 def berhu(input,target):
+    #print(input.shape,target.shape)
     target=torch.reshape(target,(input.shape)).float()
     l1=torch.nn.L1Loss(reduction='none')
     l2=torch.nn.MSELoss(reduction='none')
@@ -228,7 +245,20 @@ def berhu(input,target):
     l2_loss=l2(input, target)
     c=torch.max(l1_loss)/5
     l2=(l2_loss+torch.pow(c,2))/(2*c)
-    loss=torch.mean(torch.where(torch.le(l1_loss,c),l1_loss,l2_loss))
+    loss=torch.mean(torch.where(torch.le(l1_loss,c),l1_loss,l2))
+    return loss
+def berhu_log(input,target):
+    #print(input.shape,target.shape)
+    target=torch.reshape(target,(input.shape)).float()
+    input=torch.log10(input+1e-12) 
+    target=torch.log10(target+1e-12) 
+    l1=torch.nn.L1Loss(reduction='none')
+    l2=torch.nn.MSELoss(reduction='none')
+    l1_loss=l1(input,target)
+    l2_loss=l2(input, target)
+    c=torch.max(l1_loss)/5
+    l2=(l2_loss+torch.pow(c,2))/(2*c)
+    loss=torch.mean(torch.where(torch.le(l1_loss,c),l1_loss,l2))
     return loss
 def log_loss(input, target, weight=None, size_average=True):
     # num=torch.sum(torch.where(input==0,torch.ones_like(input),torch.zeros_like(input)))

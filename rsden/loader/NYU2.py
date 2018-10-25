@@ -2,7 +2,7 @@
 # @Author: yulidong
 # @Date:   2018-04-25 23:06:40
 # @Last Modified by:   yulidong
-# @Last Modified time: 2018-08-20 20:50:13
+# @Last Modified time: 2018-10-25 16:45:05
 
 
 import os
@@ -14,7 +14,7 @@ from torch.utils import data
 from python_pfm import *
 from rsden.utils import recursive_glob
 import torchvision.transforms as transforms
-
+import torch.nn.functional as F
 class NYU2(data.Dataset):
     def __init__(self, root, split="train", is_transform=True, img_size=(480,640),task='depth'):
         """__init__
@@ -53,7 +53,7 @@ class NYU2(data.Dataset):
             self.r=5 
         if task=='region':
             self.d=3
-            self.r=5
+            self.r=7
             self.m=6                
     def __len__(self):
         """__len__"""
@@ -69,7 +69,7 @@ class NYU2(data.Dataset):
             data=data[0,:,:,:]
         #print(data.shape)
         img = data[:,:,0:3]
-        img=img[:,:,::-1]
+        #img=img[:,:,::-1]
         #dis=readPFM(disparity_path)
         #dis=np.array(dis[0], dtype=np.uint8)
 
@@ -103,9 +103,9 @@ class NYU2(data.Dataset):
         # Resize scales images from 0 to 255, thus we need
         # to divide by 255.0
         #img = torch.from_numpy(img).float()
-        depth = torch.from_numpy(depth).float()
-        segments=torch.from_numpy(segments).long()
-        region=torch.from_numpy(region).float()
+        depth = torch.from_numpy(depth).float().unsqueeze(0).unsqueeze(0)
+        segments=torch.from_numpy(segments).float().unsqueeze(0)
+        region=torch.from_numpy(region).float().unsqueeze(0)
         #img = img.astype(float) / 255.0
         # NHWC -> NCHW
         #img = img.transpose(1,2,0)
@@ -113,7 +113,8 @@ class NYU2(data.Dataset):
         normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
         img=totensor(img)
-        img=normalize(img)
+        img=normalize(img).unsqueeze(0)
+        #print(img.shape,depth.shape)
         #depth=depth[0,:,:]
         #depth = depth.astype(float)/32
         #depth = np.round(depth)
@@ -128,7 +129,15 @@ class NYU2(data.Dataset):
 
         #if not np.all(classes < self.n_classes):
         #    raise ValueError("Segmentation map contained invalid class values")
-
-
-
+        img=F.interpolate(img,scale_factor=1/2,mode='nearest').squeeze()
+        #print(depth.shape)
+        depth=F.interpolate(depth,scale_factor=1/2,mode='nearest').squeeze()
+        region=F.interpolate(region,scale_factor=1/2,mode='nearest').squeeze()
+        segments=F.interpolate(segments,scale_factor=1/2,mode='nearest').squeeze()
+        # img=img.squeeze()
+        # #print(depth.shape)
+        # depth=depth.squeeze()
+        # region=region.squeeze()
+        # segments=segments.squeeze()
+        #print(region.shape,segments.shape)
         return img, depth,region,segments
