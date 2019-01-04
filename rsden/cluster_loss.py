@@ -2,14 +2,15 @@
 # @Author: lidong
 # @Date:   2018-03-18 16:31:14
 # @Last Modified by:   yulidong
-# @Last Modified time: 2018-10-22 21:25:23
+# @Last Modified time: 2018-12-26 18:14:20
 
 import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-
-def cluster_loss(feature,segment,lvar=0.16,dis=0.64):
+alpha=0.7132995128631592
+beta=9.99547004699707
+def cluster_loss(feature,segment,lvar=0.16,dis=0.34,device_id=0):
     lvar=torch.tensor(lvar).float().cuda()
     dis=torch.tensor(dis).float().cuda()
     #segment=torch.squeeze(segment)
@@ -21,7 +22,7 @@ def cluster_loss(feature,segment,lvar=0.16,dis=0.64):
     #var=[]
     #print(feature.shape)
     #print(segment.shape)
-    for i in range(1,instance_num+1):
+    for i in range(1,torch.max(segment)+1):
         mask_r=torch.where(segment==i,ones,zeros)
         feature_r=feature*mask_r
         count=torch.sum(mask_r)
@@ -67,7 +68,113 @@ def cluster_loss(feature,segment,lvar=0.16,dis=0.64):
         exit()
     #exit()
     return loss_var,loss_dis,loss_reg
-    #add the geometrical distance loss
-    #two channel of the postion of pixels
-    #x=torch.arange(0,feature.shape[2])
-    #y=torch.arange(0,feature.shape[3])
+
+
+def cluster_loss_depth(feature,segment,depth,lvar=0.16,dis=0.34,device_id=0):
+    segment=segment.view(1,1,segment.shape[-2],segment.shape[-1])
+    lvar=torch.tensor(lvar).float().cuda()
+    depth=depth.view_as(segment)
+    d_var=(torch.max(depth)-torch.min(depth))/80
+    d_var=torch.pow(d_var/2,2)
+    dis=torch.tensor(dis).float().cuda()
+    instance_num=torch.max(segment)
+    ones=torch.ones_like(segment).float()
+    zeros=torch.zeros_like(segment).float()
+    mean=[]
+    depth_mask=(depth>alpha)&(depth<beta)
+    depth_mask=depth_mask.float()
+    for i in range(1,torch.max(segment)+1):
+        mask_r=(segment==i).float()
+        mask_r_d=mask_r*depth_mask
+        depth_r=depth*mask_r_d
+        count=torch.sum(mask_r_d)
+        if count==0:
+            count=1
+        mean_r_d=torch.sum(depth_r)/count
+        var_r_d=torch.where(mask_r_d==ones,torch.pow(depth_r-mean_r_d,2),zeros)
+        #check the real mask
+        mask_i=(var_r_d<=d_var).float()*mask_r_d
+        count=torch.sum(mask_i)
+        if count==0:
+            count=1
+        feature_r=feature*mask_i
+        mean_r=torch.sum(torch.sum(feature_r,dim=-1),dim=-1)/count
+        mean_r_volume=mean_r.view(mean_r.shape[0],mean_r.shape[1],1,1).expand(1,-1,feature.shape[-2],feature.shape[-1])
+        var_map=torch.where(mask_i==ones,torch.norm(feature_r-mean_r_volume,dim=1),zeros)
+        loss_var_r=torch.where(mask_i==ones,var_map-lvar,zeros)
+        if i==1:
+            loss_var=torch.sum(torch.pow(torch.clamp(loss_var_r,min=0),2))/count
+        else:
+            loss_var+=torch.sum(torch.pow(torch.clamp(loss_var_r,min=0),2))/count
+        mask_o=torch.where(var_r_d>d_var,ones,zeros)*mask_r_d
+        count=torch.sum(mask_o)
+        if count==0:
+            count=1
+        feature_r=feature*mask_o
+        # mean_r=torch.sum(torch.sum(feature_r,dim=-1),dim=-1)/count
+        # mean_r_volume=mean_r.view(mean_r.shape[0],mean_r.shape[1],1,1).expand(-1,-1,feature.shape[-2],feature.shape[-1])
+        var_map=torch.where(mask_o==ones,torch.norm(feature_r-mean_r_volume,dim=1),zeros)
+        loss_var_r=torch.where(mask_o==ones,2*lvar-var_map,zeros)
+        if i==1:
+            loss_dis=torch.sum(torch.pow(torch.clamp(loss_var_r,min=0),2))/count
+            #print(loss_dis,count)
+        else:
+            #print(torch.sum(torch.pow(torch.clamp(loss_var_r,min=0),2))/count,count)
+            loss_dis+=torch.sum(torch.pow(torch.clamp(loss_var_r,min=0),2))/count
+    count=torch.max(segment)
+    if count==0:
+        count=1
+    loss_var=loss_var/count
+    loss_dis=loss_dis/count
+    if torch.isnan(loss_var) or torch.isinf(loss_var):
+        print(loss_var,loss_dis)
+        print(instance_num,count)
+        exit()
+    #exit()
+    return loss_var,loss_dis
+def semi_loss(feature,segment,lvar=0.16,dis=0.32,device_id=0):
+    lvar=torch.tensor(lvar).float().cuda()
+    dis=torch.tensor(dis).float().cuda()
+    #segment=torch.squeeze(segment)
+    instance_num=torch.max(segment)
+    #print(instance_num)
+    ones=torch.ones_like(segment).float()
+    zeros=torch.zeros_like(segment).float()
+    mean=[]
+    #var=[]
+    #print(feature.shape)
+    #print(segment.shape)
+    for i in range(1,torch.max(segment)+1):
+        mask_r=torch.where(segment==i,ones,zeros)
+        feature_r=feature*mask_r
+        count=torch.sum(mask_r)
+        if count==0:
+            count=1
+        mean_r=torch.sum(torch.sum(feature_r,dim=-1),dim=-1)/count
+        mean.append(mean_r)
+        #mean_r shape N*C
+        mean_r_volume=mean_r.view(mean_r.shape[0],mean_r.shape[1],1,1).expand(-1,-1,feature.shape[-2],feature.shape[-1])
+        var_map=torch.where(mask_r==ones,torch.norm(feature_r-mean_r_volume,dim=1),zeros)
+        #print(var_map.shape)
+        loss_var_r=var_map
+        if i==1:
+            loss_var=torch.sum(torch.pow(loss_var_r,2))/count
+        else:
+            loss_var+=torch.sum(torch.pow(loss_var_r,2))/count
+        #var_r=torch.sum(var_map)/count
+        #var.append(var_r)
+    mean=torch.stack(mean)
+    #instance_num=instance_num.float()
+    loss_var=loss_var/instance_num.float().cuda()
+    #print(mean.shape)
+    # left=mean.view(1,instance_num,mean.shape[1],mean.shape[2]).expand(instance_num,instance_num,mean.shape[1],mean.shape[2])
+    # right=mean.view(instance_num,1,mean.shape[1],mean.shape[2]).expand(instance_num,instance_num,mean.shape[1],mean.shape[2])
+    # dis_map=torch.norm(left-right,dim=-1)
+    # dis_map=torch.where(dis_map==0,torch.min(dis_map),dis_map)
+    # dis=torch.min(dis_map)
+    if torch.isnan(loss_var) or torch.isinf(loss_var):
+        print(loss_var,loss_dis)
+        print(instance_num,count)
+        exit()
+    #exit()
+    return loss_var

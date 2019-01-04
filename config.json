@@ -14,7 +14,7 @@
   } ,
     "nyu":
   {
-    "data_path": "/home/lidong/Documents/datasets/nyu/"
+    "data_path": "/home/dataset/datasets/nyu2_depth/npy_data"
   } ,
     "kitti":
   {

@@ -2,7 +2,7 @@
 # @Author: lidong
 # @Date:   2018-03-20 18:01:52
 # @Last Modified by:   yulidong
-# @Last Modified time: 2019-01-03 18:48:15
+# @Last Modified time: 2018-12-11 15:09:02
 
 import torch
 import numpy as np
@@ -16,8 +16,11 @@ from rsden.models.utils import *
 import time
 cuda_id=2
 group_dim=32
-alpha=0.7132995128631592
+maxdisp=200
+#alpha=0.7132995128631592
+alpha=0.3
 beta=9.99547004699707
+shift=1-alpha
 def mean_shift(feature,mean,bandwidth):
     #feature shape c h w
     for t in range(10):
@@ -240,6 +243,23 @@ class Bottleneck(nn.Module):
         out = self.relu(out)
 
         return out
+class depthregression(nn.Module):
+    def __init__(self, maxdisp):
+        super(depthregression,self).__init__()
+        interval=[]
+        for i in range(maxdisp):
+            interval.append(np.exp(np.log(alpha+shift)+np.log((beta+shift)/(alpha+shift))*i/maxdisp))
+        self.disp = Variable(
+            torch.Tensor(
+                np.reshape(np.array(interval),
+                           [1, maxdisp, 1, 1])),
+            requires_grad=False)
+
+    def forward(self, x):
+        
+        disp = self.disp.repeat(x.size()[0], 1, x.size()[2], x.size()[3]).cuda()
+        out = torch.sum(x * disp, 1)-shift
+        return out
 class rsn_cluster(nn.Module):
 
 
@@ -252,6 +272,8 @@ class rsn_cluster(nn.Module):
         super(rsn_cluster, self).__init__()
         self.inplanes = 64
         layers=[4, 10, 5, 5]
+        aspp_dilation=[3,5,9,15]
+        aspp_kernel=[3,3,3,3]
         block=BasicBlock
         # Encoder
         self.conv1=conv2DGroupNormRelu(3, 32, k_size=3,
@@ -262,7 +284,7 @@ class rsn_cluster(nn.Module):
 
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-        self.layer4 = self._make_layer(block, 256, layers[3], stride=1)
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=1)
         # self.layer5 = conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=256,
         #                                         padding=1, stride=1, bias=False,group_dim=group_dim)
 
@@ -270,22 +292,23 @@ class rsn_cluster(nn.Module):
         # Pyramid Pooling Module
         #we need to modify the padding to keep the diminsion
         #remove 1 ,because the error of bn
-        self.pyramid_pooling = pyramidPoolingGroupNorm(256, [[2,2],[5,5],[20,20],[1,1]],group_dim=group_dim)
+        self.pyramid_pooling = pyramidPoolingGroupNorm(512, [[28,38],[14,19],[7,9],[1,1]],group_dim=group_dim)
+        #self.pyramid_pooling = AtrouspyramidPoolingGroupNorm(512, aspp_dilation,group_dim=group_dim,kernel=aspp_kernel)
         #self.global_pooling = globalPooling(256, 1)
         # Final conv layers
         #self.cbr_final = conv2DBatchNormRelu(512, 256, 3, 1, 1, False)
         #self.dropout = nn.Dropout2d(p=0.1, inplace=True)
-        self.fuse0 = conv2DGroupNormRelu(in_channels=512, k_size=3, n_filters=256,
+        self.fuse0 = conv2DGroupNormRelu(in_channels=1024, k_size=3, n_filters=256,
                                                 padding=1, stride=1, bias=False,group_dim=group_dim)        
         self.fuse1 = conv2DGroupNormRelu(in_channels=256, k_size=3, n_filters=128,
                                                  padding=1, stride=1, bias=False,group_dim=group_dim)
         #we need to replace the upsampling unit with nearest and deconv2d
-        self.deconv1 = upprojection(in_channels=128, n_filters=128, k_size=5, 
-                                                 stride=2, padding=2,output_padding=0, bias=False,group_dim=group_dim)
+        self.deconv1 = deconv2DGroupNormRelu(in_channels=128, n_filters=128, k_size=4, 
+                                                 stride=2, padding=1,output_padding=0, bias=False,group_dim=group_dim)
         self.fuse2 = conv2DGroupNormRelu(in_channels=256, k_size=3, n_filters=128,
                                                  padding=1, stride=1, bias=False,group_dim=group_dim)
-        self.deconv2 = upprojection(in_channels=128, n_filters=128, k_size=5, 
-                                                 stride=2, padding=2,output_padding=0, bias=False,group_dim=group_dim)
+        self.deconv2 = deconv2DGroupNormRelu(in_channels=128, n_filters=128, k_size=4, 
+                                                 stride=2, padding=1,output_padding=0, bias=False,group_dim=group_dim)
         self.fuse3 = conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=64,
                                                  padding=1, stride=1, bias=False,group_dim=group_dim) 
         self.fuse4 = conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=128,
@@ -294,16 +317,13 @@ class rsn_cluster(nn.Module):
         #self.regress1 = self._make_layer(block,128, 4, stride=1)
         self.regress1 = conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=128,
                                                   padding=1, stride=1, bias=False,group_dim=group_dim)
-        #self.drop1=nn.Dropout2d(p=0.2)
-        self.regress2 = conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=64,
+        self.regress2 = conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=128,
                                                   padding=1, stride=1, bias=False,group_dim=group_dim)
-        #self.drop2=nn.Dropout2d(p=0.1)
-        self.regress3 = conv2DGroupNormRelu(in_channels=64, k_size=3, n_filters=32,
-                                                 padding=1, stride=1, bias=False,group_dim=group_dim)
-        #self.drop3=nn.Dropout2d(p=0.1)
-        self.regress4 = conv2DRelu(in_channels=32, k_size=1, n_filters=16,
-                                         padding=0, stride=1, bias=False)
-        self.regress5 = conv2DRelu(in_channels=16, k_size=1, n_filters=1,
+        self.regress3 = conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=128,
+                                                 padding=1, stride=1, bias=False,group_dim=group_dim) 
+        self.regress4 = conv2DRelu(in_channels=128, k_size=3, n_filters=128,
+                                         padding=1,stride=1, bias=False)
+        self.regress5 = conv2D(in_channels=128, k_size=1, n_filters=maxdisp,
                                          padding=0, stride=1, bias=False)       
         self.class0= conv2DGroupNormRelu(in_channels=64, k_size=1, n_filters=64,
                                                  padding=0, stride=1, bias=False,group_dim=group_dim)
@@ -323,16 +343,16 @@ class rsn_cluster(nn.Module):
         #                                          padding=1, stride=1, bias=False)
         # self.outrefine4= conv2D(in_channels=32, k_size=1, n_filters=1,
         #                                          padding=0, stride=1, bias=False)
-        self.inrefine1=conv2DGroupNormRelu(in_channels=129, k_size=3, n_filters=64,
-                                                 padding=1, stride=1, bias=False,group_dim=32)
-        self.inrefine2=conv2DGroupNormRelu(in_channels=64, k_size=3, n_filters=32,
-                                                 padding=1, stride=1, bias=False,group_dim=32)
-        self.inrefine3=conv2DGroupNormRelu(in_channels=32, k_size=3, n_filters=16,
-                                                 padding=1, stride=1, bias=False,group_dim=16)
-        self.inrefine4= conv2DRelu(in_channels=16, k_size=1, n_filters=8,
+        self.inrefine1=conv2DGroupNormRelu(in_channels=65, k_size=3, n_filters=64,
+                                                 padding=1, stride=1, bias=False,group_dim=group_dim)
+        self.inrefine2=conv2DGroupNormRelu(in_channels=64, k_size=3, n_filters=64,
+                                                 padding=1, stride=1, bias=False,group_dim=group_dim)
+        self.inrefine3=conv2DGroupNormRelu(in_channels=64, k_size=3, n_filters=32,
+                                                 padding=1, stride=1, bias=False,group_dim=group_dim)
+        self.inrefine4= conv2D(in_channels=32, k_size=1, n_filters=1,
                                                  padding=0, stride=1, bias=False)
-        self.inrefine5= conv2D(in_channels=8, k_size=1, n_filters=1,
-                                                 padding=0, stride=1, bias=False)
+        # self.inrefine5= conv2D(in_channels=16, k_size=1, n_filters=1,
+        #                                          padding=0, stride=1, bias=False)
         self.reliable1=conv2DGroupNormRelu(in_channels=65, k_size=3, n_filters=64,
                                                  padding=1, stride=1, bias=False,group_dim=group_dim)
         self.reliable2=conv2DGroupNormRelu(in_channels=64, k_size=3, n_filters=64,
@@ -343,7 +363,7 @@ class rsn_cluster(nn.Module):
                                                  padding=0, stride=1, bias=False)
         # self.reliable5= conv2D(in_channels=16, k_size=1, n_filters=1,
         #                                          padding=0, stride=1, bias=False)
-
+        self.depthregression=depthregression(maxdisp)
         self.output=nn.ReLU(inplace=True)
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -377,7 +397,6 @@ class rsn_cluster(nn.Module):
         return nn.Sequential(*layers)
     def forward(self, x,segments,labels,flag,task):
         #print(x.shape)
-
         location_map=torch.cat([(torch.arange(x.shape[-1])/x.shape[-1]).unsqueeze(0).expand(x.shape[-2],x.shape[-1]).unsqueeze(0), \
             (torch.arange(x.shape[-2])/x.shape[-2]).unsqueeze(0).transpose(1,0).expand(x.shape[-2],x.shape[-1]).unsqueeze(0)],0).unsqueeze(0).float().cuda()
         #x=torch.cat([x,location_map],1)
@@ -439,34 +458,15 @@ class rsn_cluster(nn.Module):
             #x=self.regress1(torch.cat([x_fuse,masks/torch.max(masks)],1))
             #x=self.regress1(torch.cat([x_fuse,mask_volume],1))
             x=self.regress1(x_fuse)
-            #x=self.drop1(x)
             #print(x.shape)
             x=self.regress2(x)
-            #x=self.drop2(x)
             x=self.regress3(x)
-            #x=self.drop3(x)
             x=self.regress4(x)
             depth=self.regress5(x)
-            #depth=torch.where(depth>4*torch.mean(depth),torch.mean(depth),depth)
-            initial_depth=depth+0
-            depth=torch.where(depth>beta,beta*one,depth)
-            depth=torch.where(depth<alpha,alpha*one,depth)
-            #accurate_depth=initial_depth+0
-            x_fuse=torch.cat([depth,x_share],1)
-            #x_fuse=initial_depth+x_share
-            x=self.inrefine1(x_fuse)
-            #print(x.shape)
-            x=self.inrefine2(x)
-            x=self.inrefine3(x)
-            x=self.inrefine4(x)
-            accurate_depth=self.inrefine5(x)
-            if task=='memory':
-                return accurate_depth,x_share
-            #accurate_depth=self.output(initial_depth+variance)
-            # initial_depth=torch.where(initial_depth>beta,beta*one,initial_depth)
-            # initial_depth=torch.where(initial_depth<alpha,alpha*one,initial_depth)
-            # accurate_depth=torch.where(accurate_depth>beta,beta*one,accurate_depth)
-            # accurate_depth=torch.where(accurate_depth<alpha,alpha*one,accurate_depth)
+            ordinal = F.softmax(depth, dim=1)
+            initial_depth=self.depthregression(ordinal)
+
+
             # with torch.no_grad():
             #     #masks=fast_cluster(y).view_as(depth)
             #     #masks=segments.view_as(depth)

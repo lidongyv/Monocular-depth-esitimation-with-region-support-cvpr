@@ -2,7 +2,7 @@
 # @Author: lidong
 # @Date:   2018-03-20 18:01:52
 # @Last Modified by:   yulidong
-# @Last Modified time: 2019-01-03 18:48:15
+# @Last Modified time: 2018-11-04 21:21:54
 
 import torch
 import numpy as np
@@ -13,18 +13,15 @@ from torch.autograd import Variable
 from rsden.cluster_loss import *
 from rsden import caffe_pb2
 from rsden.models.utils import *
-import time
-cuda_id=2
-group_dim=32
-alpha=0.7132995128631592
-beta=9.99547004699707
+cuda_id=3
+group_dim=1
 def mean_shift(feature,mean,bandwidth):
     #feature shape c h w
     for t in range(10):
         #print(t)
         dis=feature-mean
         dis=torch.norm(dis,dim=0)
-        mask=torch.where(dis<bandwidth,torch.tensor(1).cuda(),torch.tensor(0).cuda()).float()
+        mask=torch.where(dis<bandwidth,torch.tensor(1).cuda(cuda_id),torch.tensor(0).cuda(cuda_id)).float()
         mean=torch.sum((feature*mask).view(feature.shape[0],feature.shape[1]*feature.shape[2]),dim=1)/torch.sum(mask)
         mean=mean.view([feature.shape[0],1,1])
     return mean
@@ -32,19 +29,19 @@ def get_mask(feature,mean,bandwidth):
     mean=mean.view([mean.shape[0],1,1])
     dis=feature-mean
     dis=torch.norm(dis,dim=0)
-    mask=torch.where(dis<bandwidth,torch.tensor(1).cuda(),torch.tensor(0).cuda())
-    #pixels=mask.nonzero()
+    mask=torch.where(dis<bandwidth,torch.tensor(1).cuda(cuda_id),torch.tensor(0).cuda(cuda_id))
+    pixels=mask.nonzero()
     return mask.float()
 
 
 def re_label(mask,area,bandwidth):
     index=torch.sum(area)
     print(index)
-    count=torch.tensor(0).float().cuda()
+    count=torch.tensor(0).float().cuda(cuda_id)
     for i in range(area.shape[0]):
         mask[i,:,:]=torch.where(mask[i,:,:]>0,mask[i,:,:]+count,mask[i,:,:])
         count+=area[i]
-    segment=torch.where(mask>0,torch.tensor(1).cuda(),torch.tensor(0).cuda()).float()
+    segment=torch.where(mask>0,torch.tensor(1).cuda(cuda_id),torch.tensor(0).cuda(cuda_id)).float()
     final=torch.sum(mask,dim=0)/torch.sum(segment,dim=0)
     final=torch.squeeze(final)
     final=final/255
@@ -63,30 +60,29 @@ def refine_mask(mask):
                 mask[minx+80*(i-1):minx+80*i,miny+80*(j-1):miny+80*j]*=i*j
     areas=torch.unique(mask).sort()[0]
     for i in range(1,len(areas)):
-        mask=torch.where(mask==areas[i],-torch.ones(1).float().cuda()*i,mask)
+        mask=torch.where(mask==areas[i],-torch.ones(1).float().cuda(cuda_id)*i,mask)
     mask=-mask
     return mask.float()
 def fuse_mask(n_mask,r_mask):
-    base=torch.where(n_mask>0,torch.tensor(1).cuda(),torch.tensor(0).cuda()).float()
+    base=torch.where(n_mask>0,torch.tensor(1).cuda(cuda_id),torch.tensor(0).cuda(cuda_id)).float()
     areas=torch.max(n_mask)
-    #for i in range(1,torch.max(r_mask).long()+1):
-    i=1
-    shift=torch.where(r_mask==i,torch.tensor(1).cuda(),torch.tensor(0).cuda()).float()
-    non_overlap=torch.where(base-shift==-1,torch.tensor(1).cuda(),torch.tensor(0).cuda()).float()
-    overlap=shift-non_overlap
-    if torch.sum(non_overlap)/torch.sum(shift)>0.4:
-        areas+=1
-        n_mask=torch.where(non_overlap==1,areas,n_mask)
-        base=torch.where(n_mask>0,torch.tensor(1).cuda(),torch.tensor(0).cuda()).float()
-        #print(areas)
-    else:
-        area_num=torch.argmax(torch.bincount(torch.where(overlap.long()==1,n_mask.long(),torch.tensor(0).cuda()).view(-1))[1:]).float()+1
-        n_mask=torch.where(non_overlap==1,area_num,n_mask)
-        base=torch.where(n_mask>0,torch.tensor(1).cuda(),torch.tensor(0).cuda()).float()
+    for i in range(1,torch.max(r_mask).long()+1):
+        shift=torch.where(r_mask==i,torch.tensor(1).cuda(cuda_id),torch.tensor(0).cuda(cuda_id)).float()
+        non_overlap=torch.where(base-shift==-1,torch.tensor(1).cuda(cuda_id),torch.tensor(0).cuda(cuda_id)).float()
+        overlap=shift-non_overlap
+        if torch.sum(non_overlap)/torch.sum(shift)>0.4:
+            areas+=1
+            n_mask=torch.where(non_overlap==1,areas,n_mask)
+            base=torch.where(n_mask>0,torch.tensor(1).cuda(cuda_id),torch.tensor(0).cuda(cuda_id)).float()
             #print(areas)
-#     areas_nums=torch.tensor(1).float().cuda()
+        else:
+            area_num=torch.argmax(torch.bincount(torch.where(overlap.long()==1,n_mask.long(),torch.tensor(0).cuda(cuda_id)).view(-1))[1:]).float()+1
+            n_mask=torch.where(non_overlap==1,area_num,n_mask)
+            base=torch.where(n_mask>0,torch.tensor(1).cuda(cuda_id),torch.tensor(0).cuda(cuda_id)).float()
+            #print(areas)
+#     areas_nums=torch.tensor(1).float().cuda(cuda_id)
 #     for i in range(1,torch.max(n_mask).long()+1):
-#         region=torch.where(n_mask==i,torch.tensor(1).cuda(),torch.tensor(0).cuda()).float()
+#         region=torch.where(n_mask==i,torch.tensor(1).cuda(cuda_id),torch.tensor(0).cuda(cuda_id)).float()
 #         pixels=region.nonzero()
 #         if pixels.shape[0]>0:
 #             minx=torch.min(pixels[:,0])
@@ -109,16 +105,16 @@ def fuse_mask(n_mask,r_mask):
 def fast_cluster(feature,bandwidth=0.16):
     masks=[]
     areas=[]
-    segments=[]
-    #start_time=time.time()
+    labels=[]
+
     for i in range(feature.shape[0]):
         n_mask=0
         n_feature=feature[i,...]
-        label=torch.zeros(n_feature.shape[1],n_feature.shape[2]).cuda().float()
+        label=torch.zeros(n_feature.shape[1],n_feature.shape[2]).cuda(cuda_id).float()
         check=0
         count=0
         while(torch.min(label)==0):
-            candidate=torch.where(label==0,torch.tensor(1).float().cuda(),torch.tensor(0).float().cuda()).nonzero()
+            candidate=torch.where(label==0,torch.tensor(1).float().cuda(cuda_id),torch.tensor(0).float().cuda(cuda_id)).nonzero()
             #print(len(candidate))
             seed=torch.randint(len(candidate),(1,))[0].long()
             mean=n_feature[:,candidate[seed][0].long(),candidate[seed][1].long()].view(n_feature.shape[0],1,1)
@@ -136,28 +132,24 @@ def fast_cluster(feature,bandwidth=0.16):
                 n_masks=fuse_mask(n_masks,t_masks)
                 n_mask=torch.max(n_masks)
             #print(torch.max(n_masks))
-            candidate=torch.where(label==0,torch.tensor(1).float().cuda(),torch.tensor(0).float().cuda()).nonzero()
             if len(candidate)==check:
                 count+=1
             else:
                 check=len(candidate)
             if count>10:
+                bandwidth=bandwidth*1.1
+                count=0
+            if n_mask==70:
+                bandwidth=bandwidth*1.1
+            if n_mask==80:
+                bandwidth=bandwidth*1.1  
+            if n_mask==90:
+                bandwidth=bandwidth*1.1
+            if n_mask==100:
+                bandwidth=bandwidth*1.1
+            if n_mask>100:
+                n_masks=fuse_mask(n_masks,torch.where(label==0,torch.tensor(1).float().cuda(cuda_id),torch.tensor(0).float().cuda(cuda_id)))
                 break
-            # if count>3:
-            #     bandwidth=bandwidth*1.1
-            #     count=0
-            # if n_mask==50:
-            #     bandwidth=bandwidth*1.1
-            # if n_mask==60:
-            #     bandwidth=bandwidth*1.1  
-            # if n_mask==70:
-            #     bandwidth=bandwidth*1.1
-            # if n_mask==100:
-            #     bandwidth=bandwidth*1.1
-            if n_mask>70:
-                #n_masks=fuse_mask(n_masks,torch.where(label==0,torch.tensor(1).float().cuda(),torch.tensor(0).float().cuda()))
-                break
-    #print(time.time()-start_time)
     return n_masks
 
 def conv3x3(in_planes, out_planes, stride=1):
@@ -240,7 +232,7 @@ class Bottleneck(nn.Module):
         out = self.relu(out)
 
         return out
-class rsn_cluster(nn.Module):
+class rsn_depth(nn.Module):
 
 
     def __init__(self, 
@@ -249,7 +241,7 @@ class rsn_cluster(nn.Module):
                  input_size= (480, 640), 
                  version='scene'):
 
-        super(rsn_cluster, self).__init__()
+        super(rsn_depth, self).__init__()
         self.inplanes = 64
         layers=[4, 10, 5, 5]
         block=BasicBlock
@@ -270,7 +262,7 @@ class rsn_cluster(nn.Module):
         # Pyramid Pooling Module
         #we need to modify the padding to keep the diminsion
         #remove 1 ,because the error of bn
-        self.pyramid_pooling = pyramidPoolingGroupNorm(256, [[2,2],[5,5],[20,20],[1,1]],group_dim=group_dim)
+        self.pyramid_pooling = pyramidPoolingGroupNorm(256, [[30,40],[12,16],[3,4],[1,1]],group_dim=group_dim)
         #self.global_pooling = globalPooling(256, 1)
         # Final conv layers
         #self.cbr_final = conv2DBatchNormRelu(512, 256, 3, 1, 1, False)
@@ -280,34 +272,26 @@ class rsn_cluster(nn.Module):
         self.fuse1 = conv2DGroupNormRelu(in_channels=256, k_size=3, n_filters=128,
                                                  padding=1, stride=1, bias=False,group_dim=group_dim)
         #we need to replace the upsampling unit with nearest and deconv2d
-        self.deconv1 = upprojection(in_channels=128, n_filters=128, k_size=5, 
-                                                 stride=2, padding=2,output_padding=0, bias=False,group_dim=group_dim)
-        self.fuse2 = conv2DGroupNormRelu(in_channels=256, k_size=3, n_filters=128,
+        self.deconv1 = deconv2DGroupNormRelu(in_channels=128, n_filters=128, k_size=4, 
+                                                 stride=2, padding=1,output_padding=0, bias=False,group_dim=group_dim)
+        self.fuse2 = conv2DGroupNormRelu(in_channels=256, k_size=3, n_filters=192,
                                                  padding=1, stride=1, bias=False,group_dim=group_dim)
-        self.deconv2 = upprojection(in_channels=128, n_filters=128, k_size=5, 
-                                                 stride=2, padding=2,output_padding=0, bias=False,group_dim=group_dim)
-        self.fuse3 = conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=64,
+        self.deconv2 = deconv2DGroupNormRelu(in_channels=192, n_filters=192, k_size=4, 
+                                                 stride=2, padding=1,output_padding=0, bias=False,group_dim=group_dim)
+        self.fuse3 = conv2DGroupNormRelu(in_channels=256, k_size=3, n_filters=256,
                                                  padding=1, stride=1, bias=False,group_dim=group_dim) 
-        self.fuse4 = conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=128,
-                                                 padding=1, stride=1, bias=False,group_dim=group_dim) 
-        self.inplanes = 64
-        #self.regress1 = self._make_layer(block,128, 4, stride=1)
-        self.regress1 = conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=128,
-                                                  padding=1, stride=1, bias=False,group_dim=group_dim)
-        #self.drop1=nn.Dropout2d(p=0.2)
+        self.inplanes = 257
+        self.regress1 = self._make_layer(block,128, 4, stride=1)
+
         self.regress2 = conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=64,
                                                   padding=1, stride=1, bias=False,group_dim=group_dim)
-        #self.drop2=nn.Dropout2d(p=0.1)
         self.regress3 = conv2DGroupNormRelu(in_channels=64, k_size=3, n_filters=32,
-                                                 padding=1, stride=1, bias=False,group_dim=group_dim)
-        #self.drop3=nn.Dropout2d(p=0.1)
-        self.regress4 = conv2DRelu(in_channels=32, k_size=1, n_filters=16,
-                                         padding=0, stride=1, bias=False)
-        self.regress5 = conv2DRelu(in_channels=16, k_size=1, n_filters=1,
-                                         padding=0, stride=1, bias=False)       
-        self.class0= conv2DGroupNormRelu(in_channels=64, k_size=1, n_filters=64,
+                                                 padding=1, stride=1, bias=False,group_dim=group_dim) 
+        self.regress4 = conv2DRelu(in_channels=32, k_size=3, n_filters=1,
+                                         padding=1, stride=1, bias=False)
+        self.class0= conv2DGroupNormRelu(in_channels=258, k_size=1, n_filters=128,
                                                  padding=0, stride=1, bias=False,group_dim=group_dim)
-        self.class1= conv2DGroupNormRelu(in_channels=64, k_size=3, n_filters=64,
+        self.class1= conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=64,
                                                  padding=1, stride=1, bias=False,group_dim=group_dim)
         self.class2= conv2DRelu(in_channels=64, k_size=3, n_filters=64,
                                                  padding=1, stride=1, bias=False)
@@ -315,36 +299,36 @@ class rsn_cluster(nn.Module):
                                                  padding=1, stride=1, bias=False)        
         self.class4= conv2D(in_channels=32, k_size=1, n_filters=16,
                                                  padding=0, stride=1, bias=False)
-        # self.outrefine1=conv2DGroupNormRelu(in_channels=514, k_size=1, n_filters=128,
+        # self.outrefine1=conv2DGroupNormRelu(in_channels=516, k_size=1, n_filters=128,
         #                                          padding=0, stride=1, bias=False,group_dim=group_dim)
         # self.outrefine2=conv2DGroupNormRelu(in_channels=128, k_size=1, n_filters=64,
         #                                          padding=0, stride=1, bias=False,group_dim=group_dim)
         # self.outrefine3=conv2DRelu(in_channels=64, k_size=3, n_filters=32,
         #                                          padding=1, stride=1, bias=False)
-        # self.outrefine4= conv2D(in_channels=32, k_size=1, n_filters=1,
+        # self.outrefine4= conv2DRelu(in_channels=32, k_size=1, n_filters=1,
         #                                          padding=0, stride=1, bias=False)
-        self.inrefine1=conv2DGroupNormRelu(in_channels=129, k_size=3, n_filters=64,
-                                                 padding=1, stride=1, bias=False,group_dim=32)
-        self.inrefine2=conv2DGroupNormRelu(in_channels=64, k_size=3, n_filters=32,
-                                                 padding=1, stride=1, bias=False,group_dim=32)
-        self.inrefine3=conv2DGroupNormRelu(in_channels=32, k_size=3, n_filters=16,
-                                                 padding=1, stride=1, bias=False,group_dim=16)
-        self.inrefine4= conv2DRelu(in_channels=16, k_size=1, n_filters=8,
-                                                 padding=0, stride=1, bias=False)
-        self.inrefine5= conv2D(in_channels=8, k_size=1, n_filters=1,
-                                                 padding=0, stride=1, bias=False)
-        self.reliable1=conv2DGroupNormRelu(in_channels=65, k_size=3, n_filters=64,
+        self.inrefine1=conv2DGroupNormRelu(in_channels=513, k_size=3, n_filters=128,
                                                  padding=1, stride=1, bias=False,group_dim=group_dim)
-        self.reliable2=conv2DGroupNormRelu(in_channels=64, k_size=3, n_filters=64,
+        self.inrefine2=conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=64,
                                                  padding=1, stride=1, bias=False,group_dim=group_dim)
-        self.reliable3= conv2DGroupNormRelu(in_channels=64, k_size=1, n_filters=32,
-                                                 padding=0, stride=1, bias=False,group_dim=group_dim)    
-        self.reliable4= conv2D(in_channels=32, k_size=1, n_filters=1,
+        self.inrefine3=conv2DGroupNormRelu(in_channels=64, k_size=3, n_filters=32,
+                                                 padding=1, stride=1, bias=False,group_dim=group_dim)
+        self.inrefine4= conv2DRelu(in_channels=32, k_size=1, n_filters=16,
                                                  padding=0, stride=1, bias=False)
+        self.inrefine5= conv2D(in_channels=16, k_size=1, n_filters=1,
+                                                 padding=0, stride=1, bias=False)
+        # self.reliable1=conv2DGroupNormRelu(in_channels=257, k_size=3, n_filters=128,
+        #                                          padding=1, stride=1, bias=False,group_dim=group_dim)
+        # self.reliable2=conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=64,
+        #                                          padding=1, stride=1, bias=False,group_dim=group_dim)
+        # self.reliable3= conv2DGroupNormRelu(in_channels=64, k_size=1, n_filters=32,
+        #                                          padding=0, stride=1, bias=False,group_dim=group_dim)    
+        # self.reliable4= conv2DGroupNormRelu(in_channels=32, k_size=1, n_filters=16,
+        #                                          padding=0, stride=1, bias=False)
         # self.reliable5= conv2D(in_channels=16, k_size=1, n_filters=1,
         #                                          padding=0, stride=1, bias=False)
-
         self.output=nn.ReLU(inplace=True)
+
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
@@ -375,14 +359,13 @@ class rsn_cluster(nn.Module):
             layers.append(block(self.inplanes, planes))
 
         return nn.Sequential(*layers)
-    def forward(self, x,segments,labels,flag,task):
+    def forward(self, x,labels,flag,task):
         #print(x.shape)
-
         location_map=torch.cat([(torch.arange(x.shape[-1])/x.shape[-1]).unsqueeze(0).expand(x.shape[-2],x.shape[-1]).unsqueeze(0), \
-            (torch.arange(x.shape[-2])/x.shape[-2]).unsqueeze(0).transpose(1,0).expand(x.shape[-2],x.shape[-1]).unsqueeze(0)],0).unsqueeze(0).float().cuda()
+            (torch.arange(x.shape[-2])/x.shape[-2]).unsqueeze(0).transpose(1,0).expand(x.shape[-2],x.shape[-1]).unsqueeze(0)],0).unsqueeze(0).float().cuda(cuda_id)
         #x=torch.cat([x,location_map],1)
-        zero=torch.zeros(1).cuda()
-        one=torch.ones(1).cuda()
+        zero=torch.zeros(1).cuda(cuda_id)
+        one=torch.ones(1).cuda(cuda_id)
         x = self.conv1(x)
         x=self.conv2(x)
         x1 = self.layer1(x)
@@ -403,11 +386,10 @@ class rsn_cluster(nn.Module):
         #print(x.shape)
         x = self.deconv1(x)
         #print(x.shape,x2.shape)
-        x = self.fuse2(torch.cat([x,x2],1))
+        x = self.fuse2(torch.cat((x,x2),1))
         x = self.deconv2(x)
         #print(x.shape)
-        x = self.fuse3(x)
-        x_share = self.fuse4(torch.cat([x,x1],1))
+        x_share = self.fuse3(torch.cat((x,x1),1))
 
         # x=self.regress1(x_share)
         # #print(x.shape)
@@ -422,161 +404,91 @@ class rsn_cluster(nn.Module):
         #accurate_depth=depth*reliable
         
         if flag==0:
-            #x_fuse=torch.cat([x_share,location_map],1)
-            x_fuse=x_share
-            # y=self.class0(x_fuse)
-            # y=self.class1(y)
-            # y=self.class2(y)
-            # y=self.class3(y)
-            # y=self.class4(y)
-            # with torch.no_grad():
-            #     #masks=fast_cluster(y).view(1,1,x_share.shape[-2],x_share.shape[-1])
-            #     masks=segments.view(1,1,x_share.shape[-2],x_share.shape[-1])
-                # mask_volume=torch.zeros(1,80,x_share.shape[-2],x_share.shape[-1]).cuda()
-                # for i in range(1,torch.max(masks).int()+1):
-                #     mask_volume[:,i-1,:,:]=torch.where(masks==i,one,zero).view_as(mask_volume[:,i-1,:,:])
-            #x=self.regress1(x_share)
-            #x=self.regress1(torch.cat([x_fuse,masks/torch.max(masks)],1))
-            #x=self.regress1(torch.cat([x_fuse,mask_volume],1))
-            x=self.regress1(x_fuse)
-            #x=self.drop1(x)
+            x_fuse=torch.cat([x_share,location_map],1)
+            y=self.class0(x_fuse)
+            y=self.class1(y)
+            y=self.class2(y)
+            y=self.class3(y)
+            y=self.class4(y)
+            with torch.no_grad():
+                masks=fast_cluster(y).view(1,1,x_share.shape[-2],x_share.shape[-1])
+            x=self.regress1(torch.cat([x_share,masks/(torch.max(masks)+1)],1))
             #print(x.shape)
             x=self.regress2(x)
-            #x=self.drop2(x)
             x=self.regress3(x)
-            #x=self.drop3(x)
-            x=self.regress4(x)
-            depth=self.regress5(x)
-            #depth=torch.where(depth>4*torch.mean(depth),torch.mean(depth),depth)
-            initial_depth=depth+0
-            depth=torch.where(depth>beta,beta*one,depth)
-            depth=torch.where(depth<alpha,alpha*one,depth)
-            #accurate_depth=initial_depth+0
-            x_fuse=torch.cat([depth,x_share],1)
-            #x_fuse=initial_depth+x_share
-            x=self.inrefine1(x_fuse)
-            #print(x.shape)
-            x=self.inrefine2(x)
-            x=self.inrefine3(x)
-            x=self.inrefine4(x)
-            accurate_depth=self.inrefine5(x)
-            if task=='memory':
-                return accurate_depth,x_share
-            #accurate_depth=self.output(initial_depth+variance)
-            # initial_depth=torch.where(initial_depth>beta,beta*one,initial_depth)
-            # initial_depth=torch.where(initial_depth<alpha,alpha*one,initial_depth)
-            # accurate_depth=torch.where(accurate_depth>beta,beta*one,accurate_depth)
-            # accurate_depth=torch.where(accurate_depth<alpha,alpha*one,accurate_depth)
-            # with torch.no_grad():
-            #     #masks=fast_cluster(y).view_as(depth)
-            #     #masks=segments.view_as(depth)
-            #     #coarse depth
-            #     coarse_depth=depth+0
-            #     coarse_feature=x_fuse+0
-            #     mean_features=torch.zeros(1,x_fuse.shape[1],torch.max(masks).long()+1).cuda()
-            #     mean_depth=torch.zeros(torch.max(masks).long()+1).cuda()
-            #     #print(torch.max(masks))
-            #     for i in range(1,torch.max(masks).int()+1):
-            #         index_r=torch.where(masks==i,one,zero)
-            #         mean_d=torch.sum(index_r*depth)/torch.sum(index_r)
-            #         mean_depth[i]=mean_d
-            #         coarse_depth=torch.where(masks==i,mean_d,coarse_depth)
-            #         mean_f=torch.sum((index_r*x_fuse).view(x_fuse.shape[0],x_fuse.shape[1],-1),dim=-1)/torch.sum(index_r)
-            #         #print(mean_f.shape,mean_features[...,i].shape)
-            #         mean_features[...,i]=mean_f
-            #         coarse_feature=torch.where(masks==i,mean_f.view(x_fuse.shape[0],x_fuse.shape[1],1,1),coarse_feature)
+            depth=self.regress4(x)
+            #coarse depth
+            with torch.no_grad():
+                #masks=fast_cluster(y).view_as(depth)
+                #masks=labels.view_as(depth)
+                labels=labels.view_as(depth)
+                #coarse depth
+                coarse_depth=torch.zeros_like(depth).cuda(cuda_id)
+                coarse_feature=torch.zeros_like(x_share).cuda(cuda_id)
+                mean_features=torch.zeros(1,x_share.shape[1],torch.max(masks).long()+1).cuda(cuda_id)
+                mean_depth=torch.zeros(torch.max(masks).long()+1).cuda(cuda_id)
+                #print(torch.max(masks))
+                for i in range(torch.min(masks).int(),torch.max(masks).int()+1):
+                    index_r=torch.where(masks==i,one,zero)
+                    mean_d=torch.sum(index_r*depth)/torch.sum(index_r)
+                    mean_depth[i]=mean_d
+                    coarse_depth=torch.where(masks==i,mean_d,coarse_depth)
+                    mean_f=torch.sum((index_r*x_share).view(x_share.shape[0],x_share.shape[1],-1),dim=-1)/torch.sum(index_r)
+                    #print(mean_f.shape,mean_features[...,i].shape)
+                    mean_features[...,i]=mean_f
+                    coarse_feature=torch.where(masks==i,mean_f.view(x_share.shape[0],x_share.shape[1],1,1),coarse_feature)
 
-            # #     #refine outer
-            # #     outer_feature=torch.zeros(1,2*x_share.shape[1]+2,torch.max(masks).long()+1,torch.max(masks).long()+1).cuda()
-            # #     for i in range(torch.min(masks).int(),torch.max(masks).int()+1):
-            # #         for j in range(torch.min(masks).int(),torch.max(masks).int()+1):
-            # #             if i!=j:
-            # #                 #print(outer_feature[...,i,j].shape,mean_depth[i].view(1,1).shape,mean_features[...,i].shape)
-            # #                 outer_feature[...,i,j]=torch.cat([mean_depth[i].view(1,1),mean_features[...,i],mean_depth[j].view(1,1),mean_features[...,j]],dim=-1)
+            inner_feature=torch.cat([coarse_depth,x_share,coarse_feature],1)
+            inner=self.inrefine1(inner_feature)
+            inner=self.inrefine2(inner)
+            inner=self.inrefine3(inner)
+            inner=self.inrefine4(inner)
+            inner_variance=self.inrefine5(inner)
 
-            # # outer=self.outrefine1(outer_feature)
-            # # outer=self.outrefine2(outer)
-            # # outer=self.outrefine3(outer)
-            # # outer_variance=self.outrefine4(outer)
-            # # outer_depth=torch.zeros(torch.max(masks).long()+1).cuda()
-            # # # #mean_depth_map=coarse_depth+0
-            # # #with torch.no_grad():
-            # # for i in range(torch.min(masks).int(),torch.max(masks).int()+1):
-            # #     outer_depth[i]=(torch.sum(mean_depth*outer_variance[...,i,:])+mean_depth[i])/torch.sum(outer_variance[...,i,:]+1)
-            # #     #outer_depth[i]=(torch.sum(mean_depth*outer_variance[...,i,:])+mean_depth[i])
-            # #     coarse_depth=torch.where(masks==i,outer_depth[i],coarse_depth)+0
-            # #refine inner
-            # #coarse_depth=self.output(coarse_depth)
-            # inner_feature= torch.cat([coarse_depth,torch.pow(x_fuse-coarse_feature,2)],1)
-            # inner=self.inrefine1(inner_feature)
-            # inner=self.inrefine2(inner)
-            # inner=self.inrefine3(inner)
-            # inner_variance=self.inrefine4(inner)
-            # #inner_variance=self.inrefine5(inner)
-
-            # reliable_feature= torch.cat([depth,torch.pow(x_fuse-coarse_feature,2)],1)
-            # reliable=self.reliable1(reliable_feature)
-            # reliable=self.reliable2(reliable)
-            # reliable=self.reliable3(reliable)
-            # reliable_variance=self.reliable4(reliable)
-            # #reliable_variance=self.reliable5(reliable)
-            # # #inner_variance[:,0,...]=inner_variance[:,0,...]/torch.max(inner_variance[:,0,...])
-            # # reliable_to_depth=(inner_variance[:,0,...]/torch.max(inner_variance[:,0,...])).unsqueeze(1)
-            # # variance_on_cosrse=inner_variance[:,1,...].unsqueeze(1)
-            # # #print(inner_variance.shape)
-            # # accurate_depth=depth*reliable_to_depth+(coarse_depth*variance_on_cosrse)*(1-reliable_to_depth)
-            # loss_var,loss_dis,loss_reg = cluster_loss(y,segments.long(),device_id=cuda_id)
-            # loss_var=loss_var.reshape((y.shape[0],1))
-            # loss_dis=loss_dis.reshape((y.shape[0],1))
-            # loss_reg=loss_reg.reshape((y.shape[0],1))
-            # accurate_depth=self.output(inner_variance+coarse_depth)
-            # depth=self.output(reliable_variance+depth)
-            #print(torch.mean(reliable_variance).item(),torch.mean(inner_variance).item(),torch.mean(torch.abs(depth-accurate_depth)).item())
-            # accurate_depth=torch.where(masks>0,(depth+accurate_depth)/2,initial_depth)
-            #accurate_depth=torch.where(accurate_depth>4*torch.mean(accurate_depth),torch.mean(accurate_depth),accurate_depth)
-            #print(torch.mean(depth).item(),torch.mean(coarse_depth).item())
-            #loss_var,loss_dis = cluster_loss_depth(y,segments.long(),device_id=cuda_id)
-            return initial_depth,initial_depth,one,one,one
+            loss_var,loss_dis = cluster_loss_depth(y,masks.long(),labels,device_id=cuda_id)
+            loss_var=loss_var.reshape((y.shape[0],1))
+            loss_dis=loss_dis.reshape((y.shape[0],1))
+            accurate_depth=self.output(inner_variance+coarse_depth)
+            return depth,accurate_depth,loss_var,loss_dis,masks
         else:
             if task=='train':
                 with torch.no_grad():
                     masks=fast_cluster(y).view_as(depth)
                     print(torch.max(masks))
 
-                loss_var,loss_dis,loss_reg = cluster_loss(y,segments.long())
+                loss_var,loss_dis,loss_reg = cluster_loss(y,labels.long())
                 loss_var=loss_var.reshape((y.shape[0],1))
                 loss_dis=loss_dis.reshape((y.shape[0],1))
                 loss_reg=loss_reg.reshape((y.shape[0],1))
                 return depth,masks,loss_var,loss_dis,loss_reg
             elif task=='test':
 
-                loss_var,loss_dis,loss_reg = cluster_loss(y,segments.long())
+                loss_var,loss_dis,loss_reg = cluster_loss(y,labels.long())
                 loss_var=loss_var.reshape((y.shape[0],1))
                 loss_dis=loss_dis.reshape((y.shape[0],1))
                 loss_reg=loss_reg.reshape((y.shape[0],1))
                 return depth,loss_var,loss_dis,loss_reg
             elif task=='eval':
-
-                x_fuse=torch.cat([x_share,location_map],1)
-                masks=segments.view_as(depth)
-                #coarse depth
-                coarse_depth=depth+0
-                coarse_feature=x_fuse+0
-                mean_features=torch.zeros(1,x_fuse.shape[1],torch.max(masks).long()+1).cuda()
-                mean_depth=torch.zeros(torch.max(masks).long()+1).cuda()
+                # x_fuse=torch.cat([x_share,location_map],1)
+                # masks=labels.view_as(depth)
+                # #coarse depth
+                # coarse_depth=depth+0
+                # coarse_feature=x_fuse+0
+                # mean_features=torch.zeros(1,x_fuse.shape[1],torch.max(masks).long()+1).cuda(cuda_id)
+                # mean_depth=torch.zeros(torch.max(masks).long()+1).cuda(cuda_id)
                 
-                for i in range(torch.min(masks).int(),torch.max(masks).int()+1):
-                    index_r=torch.where(masks==i,one,zero)
-                    mean_d=torch.sum(index_r*depth)/torch.sum(index_r)
-                    mean_depth[i]=mean_d+0
-                    coarse_depth=torch.where(masks==i,mean_depth[i],coarse_depth)
-                    mean_f=torch.sum((index_r*x_fuse).view(x_fuse.shape[0],x_fuse.shape[1],-1),dim=-1)/torch.sum(index_r)
-                    #print(mean_f.shape,mean_features[...,i].shape)
-                    mean_features[...,i]=mean_f
-                    coarse_feature=torch.where(masks==i,mean_f.view(x_fuse.shape[0],x_fuse.shape[1],1,1),coarse_feature)
+                # for i in range(torch.min(masks).int(),torch.max(masks).int()+1):
+                #     index_r=torch.where(masks==i,one,zero)
+                #     mean_d=torch.sum(index_r*depth)/torch.sum(index_r)
+                #     mean_depth[i]=mean_d+0
+                #     coarse_depth=torch.where(masks==i,mean_depth[i],coarse_depth)
+                #     mean_f=torch.sum((index_r*x_fuse).view(x_fuse.shape[0],x_fuse.shape[1],-1),dim=-1)/torch.sum(index_r)
+                #     #print(mean_f.shape,mean_features[...,i].shape)
+                #     mean_features[...,i]=mean_f
+                #     coarse_feature=torch.where(masks==i,mean_f.view(x_fuse.shape[0],x_fuse.shape[1],1,1),coarse_feature)
 
-                #refine outer
-                # outer_feature=torch.zeros(1,2*x_fuse.shape[1]+2,torch.max(masks).long()-torch.min(masks).long()+1,torch.max(masks).long()-torch.min(masks).long()+1).cuda()
+                # #refine outer
+                # outer_feature=torch.zeros(1,2*x_fuse.shape[1]+2,torch.max(masks).long()-torch.min(masks).long()+1,torch.max(masks).long()-torch.min(masks).long()+1).cuda(cuda_id)
                 # for i in range(torch.min(masks).int(),torch.max(masks).int()+1):
                 #     for j in range(torch.min(masks).int(),torch.max(masks).int()+1):
                 #         if i!=j:
@@ -587,37 +499,36 @@ class rsn_cluster(nn.Module):
                 # outer=self.outrefine2(outer)
                 # outer=self.outrefine3(outer)
                 # outer_variance=self.outrefine4(outer)
-                # outer_depth=torch.zeros(torch.max(masks).long()-torch.min(masks).long()+1).cuda()
+                # outer_depth=torch.zeros(torch.max(masks).long()-torch.min(masks).long()+1).cuda(cuda_id)
                 # #mean_depth_map=coarse_depth+0
                 # # print(torch.min(masks))
-                # # print(torch.sum(torch.where(masks==0,torch.ones(1).cuda(),torch.zeros(1).cuda())))
+                # # print(torch.sum(torch.where(masks==0,torch.ones(1).cuda(cuda_id),torch.zeros(1).cuda(cuda_id))))
                 # for i in range(torch.min(masks).int(),torch.max(masks).int()+1):
                 #     outer_depth[i]=(torch.sum(mean_depth*outer_variance[...,i,:])+mean_depth[i])/(torch.sum(outer_variance[...,i,:])+1)
                 #     #outer_depth[i]=(torch.sum(mean_depth*outer_variance[...,i,:])+mean_depth[i])
                 #     coarse_depth=torch.where(masks==i,outer_depth[i],coarse_depth)+0
-                #print(torch.max(coarse_depth),torch.mean(mean_depth),torch.mean(outer_depth),torch.max(outer_variance))
-                #mean_depth_map=coarse_depth+0
-                #refine inner
-                inner_feature= torch.cat([coarse_depth,x_fuse-coarse_feature],1)
+                # #print(torch.max(coarse_depth),torch.mean(mean_depth),torch.mean(outer_depth),torch.max(outer_variance))
+                # #mean_depth_map=coarse_depth+0
+                # #refine inner
+                # inner_feature= torch.cat([coarse_depth,x_fuse-coarse_feature],1)
 
-                #print('inner_feature',torch.max(inner_feature).item())
-                inner=self.inrefine1(inner_feature)
-                #print('inner_1',torch.max(inner).item())
-                inner=self.inrefine2(inner)
-                #print('inner_2',torch.max(inner).item())
-                inner=self.inrefine3(inner)
-                #print('inner_3',torch.max(inner).item())
-                inner=self.inrefine4(inner)
-                inner_variance=self.inrefine5(inner)
-                accurate_depth=inner_variance
+                # #print('inner_feature',torch.max(inner_feature).item())
+                # inner=self.inrefine1(inner_feature)
+                # #print('inner_1',torch.max(inner).item())
+                # inner=self.inrefine2(inner)
+                # #print('inner_2',torch.max(inner).item())
+                # inner=self.inrefine3(inner)
+                # #print('inner_3',torch.max(inner).item())
+                # inner=self.inrefine4(inner)
+                # inner_variance=self.inrefine5(inner)
 
-                # inner_feature= torch.cat([depth,x_share],1)
-                # relialbe=self.reliable1(inner_feature)
-                # relialbe=self.reliable2(relialbe)
-                # relialbe=self.reliable3(relialbe)
-                # relialbe=self.reliable4(relialbe)
-                # relialbe=self.reliable5(relialbe)
-                # accurate_depth=relialbe
+                inner_feature= torch.cat([depth,x_share],1)
+                relialbe=self.reliable1(inner_feature)
+                relialbe=self.reliable2(relialbe)
+                relialbe=self.reliable3(relialbe)
+                relialbe=self.reliable4(relialbe)
+                relialbe=self.reliable5(relialbe)
+                accurate_depth=self.output(relialbe+depth)
                 # print('inner_variance',torch.max(inner_variance).item())
                 # inner_variance[:,0,...]=inner_variance[:,0,...]/torch.max(inner_variance[:,0,...])
                 # reliable_to_depth=(torch.exp(-relialbe[:,0,...])).unsqueeze(1)
@@ -630,7 +541,7 @@ class rsn_cluster(nn.Module):
                 # relialbe_weights=reliable_to_coarse+reliable_to_depth
                 # # #print(inner_variance.shape)
                 # accurate_depth=(depth*variance_on_depth*reliable_to_coarse+coarse_depth*variance_on_cosrse*reliable_to_coarse)/ \
-                #                                         (torch.where(relialbe_weights==0,torch.ones(1).cuda(),relialbe_weights))
+                #                                         (torch.where(relialbe_weights==0,torch.ones(1).cuda(cuda_id),relialbe_weights))
                 # refined_depth=depth*variance_on_depth
                 # coarse_depth=coarse_depth*variance_on_cosrse
                 # accurate_depth=(coarse_depth*reliable_to_coarse+refined_depth*(1-reliable_to_coarse))
@@ -638,7 +549,7 @@ class rsn_cluster(nn.Module):
                 # print('depth',torch.max(depth).item())
                 # print('coarse',torch.max(coarse_depth).item())
                 # print('accurate',torch.max(accurate_depth).item())
-                # loss_var,loss_dis,loss_reg = cluster_loss(y,segments.long())
+                # loss_var,loss_dis,loss_reg = cluster_loss(y,labels.long())
                 # loss_var=loss_var.reshape((y.shape[0],1))
                 # loss_dis=loss_dis.reshape((y.shape[0],1))
                 # loss_reg=loss_reg.reshape((y.shape[0],1))
@@ -651,7 +562,6 @@ class rsn_cluster(nn.Module):
                 # inner=self.inrefine3(inner)
                 # inner=self.inrefine4(inner)
                 # accurate_depth=self.inrefine5(inner)
-                accurate_depth=depth
                 return depth,accurate_depth
         
 

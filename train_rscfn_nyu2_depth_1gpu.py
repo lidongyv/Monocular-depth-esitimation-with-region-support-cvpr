@@ -2,7 +2,7 @@
 # @Author: lidong
 # @Date:   2018-03-18 13:41:34
 # @Last Modified by:   yulidong
-# @Last Modified time: 2018-10-30 14:44:35
+# @Last Modified time: 2018-11-05 15:17:12
 import sys
 import torch
 import visdom
@@ -26,6 +26,7 @@ import cv2
 scale=2
 def train(args):
     scale=2
+    cuda_id=3
     torch.backends.cudnn.benchmark=True
     # Setup Augmentations
     data_aug = Compose([RandomRotate(10),
@@ -40,11 +41,13 @@ def train(args):
     v_loader = data_loader(data_path, is_transform=True,
                            split='test', img_size=(args.img_rows, args.img_cols),task='region')
 
+    train_len=t_loader.length
+    test_len=v_loader.length
     n_classes = t_loader.n_classes
     trainloader = data.DataLoader(
-        t_loader, batch_size=args.batch_size, num_workers=4, shuffle=True)
+        t_loader, batch_size=args.batch_size, num_workers=1, shuffle=True)
     valloader = data.DataLoader(
-        v_loader, batch_size=args.batch_size, num_workers=4, shuffle=False)
+        v_loader, batch_size=args.batch_size, num_workers=1, shuffle=False)
 
     # Setup Metrics
     running_metrics = runningScore(n_classes)
@@ -61,6 +64,10 @@ def train(args):
         accurate_window = vis.image(
             np.random.rand(480//scale, 640//scale),
             opts=dict(title='accurate!', caption='accurate.'),
+        )
+        mask_window = vis.image(
+            np.random.rand(480//scale, 640//scale),
+            opts=dict(title='mask!', caption='mask.'),
         )
 
         ground_window = vis.image(
@@ -94,9 +101,9 @@ def train(args):
     # model = torch.nn.DataParallel(
     #     model, device_ids=range(torch.cuda.device_count()))
     model = torch.nn.DataParallel(
-        model, device_ids=range(1))
+        model, device_ids=[cuda_id])
     #model = torch.nn.DataParallel(model, device_ids=range(torch.cuda.device_count()))
-    model.cuda()
+    model.cuda(cuda_id)
 
     # Check if model has custom optimizer / loss
     # modify to adam, modify the learning rate
@@ -133,7 +140,7 @@ def train(args):
             print(trained)
             loss_rec=np.load('/home/lidong/Documents/RSCFN/loss.npy')
             loss_rec=list(loss_rec)
-            loss_rec=loss_rec[:199*trained]
+            loss_rec=loss_rec[:train_len*trained]
             test=0
             #exit()
             #trained=0
@@ -146,7 +153,7 @@ def train(args):
         
         print("No checkpoint found at '{}'".format(args.resume))
         print('Initialize from rsn!')
-        rsn=torch.load('/home/lidong/Documents/RSCFN/rsn_cluster_nyu2_19_1.2029328coarse_best_model.pkl',map_location='cpu')
+        rsn=torch.load('/home/lidong/Documents/RSCFN/all_data/simple/rsn_depth_nyu_8_cluster_model.pkl',map_location='cpu')
         model_dict=model.state_dict()  
         #print(model_dict)          
         pre_dict={k: v for k, v in rsn['model_state'].items() if k in model_dict and rsn['model_state'].items()}
@@ -172,7 +179,7 @@ def train(args):
         trained=0
         # loss_rec=np.load('/home/lidong/Documents/RSCFN/loss.npy')
         # loss_rec=list(loss_rec)
-        # loss_rec=loss_rec[:199*trained]
+        # loss_rec=loss_rec[:train_len*trained]
         #exit()
         
 
@@ -185,33 +192,35 @@ def train(args):
         model.train()
         loss_error=0
         for i, (images, labels,regions,segments,image) in enumerate(trainloader):
-            #break
-            images = Variable(images.cuda())
-            labels = Variable(labels.cuda())
-            segments = Variable(segments.cuda())
-            regions = Variable(regions.cuda())
-
+            break
+            images = Variable(images.cuda(cuda_id))
+            labels = Variable(labels.cuda(cuda_id))
+            segments = Variable(segments.cuda(cuda_id))
+            regions = Variable(regions.cuda(cuda_id))
+            
             optimizer.zero_grad()
 
             #depth,feature,loss_var,loss_dis,loss_reg = model(images,segments)
             #depth,loss_var,loss_dis,loss_reg = model(images,segments)
             #depth,masks,loss_var,loss_dis,loss_reg = model(images,segments,1,'train')
-            depth,accurate = model(images,regions,1,'eval')
-            print('depth',torch.mean(depth).item())
-            print('accurate',torch.mean(accurate).item())
-            print('ground',torch.mean(labels).item())
-            loss_d=berhu_log(depth,labels)
+            depth,accurate,loss_var,loss_dis,masks = model(images,regions,0,'eval')
+            labels=labels.view_as(depth)
+            mask=(labels>0)
+            print('depth',torch.mean(depth[mask]).item())
+            print('accurate',torch.mean(accurate[mask]).item())
+            print('ground',torch.mean(labels[mask]).item())
+            loss_d=log_loss(depth[mask],labels[mask])
             #loss_i=berhu_log(intial,labels)
-            loss_a=berhu_log(accurate,labels)
+            loss_a=log_loss(accurate[mask],labels[mask])
             #loss_d=log_loss(depth,labels)
             #loss=log_loss(depth, labels)
-            loss=0.5*loss_d+loss_a
+            loss=loss_d+loss_a+100*(loss_var+loss_dis)
             #loss=torch.sum(loss_var)+torch.sum(loss_dis)+0.001*torch.sum(loss_reg)
             #loss=loss/4+loss_d
             #loss/=feature.shape[0]
             # depth = model(images,segments)
             # loss_d=berhu(depth,labels)
-            lin=torch.sqrt(torch.mean(torch.pow(accurate-labels,2)))
+            lin=torch.sqrt(torch.mean(torch.pow(accurate[mask]-labels[mask],2)))
             # if accurate.shape[0]==4:
             #     a=torch.sqrt(torch.mean(torch.pow(accurate[0,...]-labels[0,...],2)))
             #     b=torch.sqrt(torch.mean(torch.pow(accurate[1,...]-labels[1,...],2)))
@@ -232,12 +241,12 @@ def train(args):
                 with torch.no_grad():
    
                     vis.line(
-                        X=torch.ones(1).cpu() * i+torch.ones(1).cpu() *(epoch-trained)*199,
+                        X=torch.ones(1).cpu() * i+torch.ones(1).cpu() *(epoch-trained)*train_len,
                         Y=loss.item()*torch.ones(1).cpu(),
                         win=loss_window,
                         update='append')
                     vis.line(
-                        X=torch.ones(1).cpu() * i+torch.ones(1).cpu() *(epoch-trained)*199,
+                        X=torch.ones(1).cpu() * i+torch.ones(1).cpu() *(epoch-trained)*train_len,
                         Y=lin.item()*torch.ones(1).cpu(),
                         win=lin_window,
                         update='append')
@@ -257,7 +266,14 @@ def train(args):
                         opts=dict(title='accurate!', caption='accurate.'),
                         win=accurate_window,
                     )                 
-
+                    masks = masks.data.cpu().numpy().astype('float32')
+                    masks = masks[0,...]
+                    masks = (np.reshape(masks, [480//scale, 640//scale]).astype('float32'))/(np.max(masks)+0.001)
+                    vis.image(
+                        masks,
+                        opts=dict(title='masks!', caption='masks.'),
+                        win=mask_window,
+                    )
                     depth = depth.data.cpu().numpy().astype('float32')
                     depth = depth[0, :, :, :]
                     #depth=np.where(depth>np.max(ground),np.max(ground),depth)
@@ -277,12 +293,90 @@ def train(args):
                         opts=dict(title='image!', caption='image.'),
                         win=image_window,
                     ) 
-            loss_rec.append([i+epoch*199,torch.Tensor([loss.item()]).unsqueeze(0).cpu()])
+            loss_rec.append([i+epoch*train_len,torch.Tensor([loss.item()]).unsqueeze(0).cpu()])
             loss_error+=lin.item()
-            print("data [%d/199/%d/%d] Loss: %.4f d: %.4f loss_d:%.4f loss_a:%.4f" % (i, epoch, args.n_epoch,loss.item(),lin.item(), loss_d.item(),loss_a.item()))
-            # print("data [%d/199/%d/%d] Loss: %.4f linear: %.4f " % (i, epoch, args.n_epoch,loss.item(),lin.item()
-            #                    ))
-        print(loss_error/199)
+            print("data [%d/%d/%d/%d] Loss: %.4f d: %.4f loss_d:%.4f loss_a:%.4f loss_var: %.4f loss_dis:%.4f" % (i,train_len, epoch, args.n_epoch,loss.item(), \
+                                                                lin.item(), loss_d.item(),loss_a.item(),loss_var.item(),loss_dis.item()))
+            if (i+1)%4000==0:
+                print('testing!')
+                model.eval()
+                loss_ave=[]
+                loss_d_ave=[]
+                loss_lin_ave=[]
+                loss_r_ave=[]
+                for i_val, (images_val, labels_val,regions,segments,image) in tqdm(enumerate(valloader)):
+                    #print(r'\n')
+                    images_val = Variable(images_val.cuda(cuda_id), requires_grad=False)
+                    labels_val = Variable(labels_val.cuda(cuda_id), requires_grad=False)
+                    segments_val = Variable(segments.cuda(cuda_id), requires_grad=False)
+                    regions_val = Variable(regions.cuda(cuda_id), requires_grad=False)
+                    with torch.no_grad():
+                        depth,accurate,_,_,_ = model(images_val,regions_val,0,'eval')
+                        labels_val=labels_val.view_as(depth)
+                        mask=(labels_val>0)
+                        lin=torch.sqrt(torch.mean(torch.pow(accurate[mask]-labels_val[mask],2)))
+                        loss_ave.append(lin.data.cpu().numpy())
+                        print("error=%.4f"%(lin.item()))
+                    if args.visdom:
+                        vis.line(
+                            X=torch.ones(1).cpu() * i_val+torch.ones(1).cpu()*test*test_len,
+                            Y=lin.item()*torch.ones(1).cpu(),
+                            win=error_window,
+                            update='append')
+                        ground=labels_val.data.cpu().numpy().astype('float32')
+                        ground = ground[0, :, :]
+                        ground = (np.reshape(ground, [480//scale, 640//scale]).astype('float32'))/(np.max(ground)+0.001)
+                        vis.image(
+                            ground,
+                            opts=dict(title='ground!', caption='ground.'),
+                            win=ground_window,
+                        )
+                        accurate = accurate.data.cpu().numpy().astype('float32')
+                        accurate = accurate[0,...]
+                        accurate = (np.reshape(accurate, [480//scale, 640//scale]).astype('float32'))
+
+                        accurate=accurate/(np.max(accurate)+0.001)
+                        vis.image(
+                            accurate,
+                            opts=dict(title='accurate!', caption='accurate.'),
+                            win=accurate_window,
+                        )                 
+
+                        depth = depth.data.cpu().numpy().astype('float32')
+                        depth = depth[0, :, :, :]
+                        #depth=np.where(depth>np.max(ground),np.max(ground),depth)
+                        depth = (np.reshape(depth, [480//scale, 640//scale]).astype('float32'))/(np.max(depth)+0.001)
+                        vis.image(
+                            depth,
+                            opts=dict(title='depth!', caption='depth.'),
+                            win=depth_window,
+                        )
+                        image=image.data.cpu().numpy().astype('float32')
+                        image = image[0,...]
+                        #image=image[0,...]
+                        #print(image.shape,np.min(image))
+                        image = np.reshape(image, [3,480//scale, 640//scale]).astype('float32')
+                        vis.image(
+                            image,
+                            opts=dict(title='image!', caption='image.'),
+                            win=image_window,
+                        ) 
+                error=np.mean(loss_ave)
+                print("error_r=%.4f"%(error))
+                test+=1
+
+                if error<= best_error:
+                    best_error = error
+                    state = {'epoch': epoch+1,
+                             'model_state': model.state_dict(),
+                             'optimizer_state': optimizer.state_dict(),
+                             'error': error,
+                             }
+                    torch.save(state, "only_dpeth_{}_{}_{}_{}_cluster_best_model.pkl".format(
+                        args.arch, args.dataset,str(epoch),str(error)))
+                    print('save success')
+                np.save('/home/lidong/Documents/RSCFN/loss.npy',loss_rec)
+        print("loss=%.2f"%(loss_error/train_len))
         # state = {'epoch': epoch+1,
         #          'model_state': model.state_dict(),
         #          'optimizer_state': optimizer.state_dict(),
@@ -304,7 +398,7 @@ def train(args):
             check=1
             #scheduler=torch.optim.lr_scheduler.StepLR(optimizer,step_size=30,gamma=0.1)  
         check=1
-        #epoch=3          
+        #epoch=10
         if epoch%check==0:
                 
             print('testing!')
@@ -315,17 +409,20 @@ def train(args):
             loss_r_ave=[]
             for i_val, (images_val, labels_val,regions,segments,image) in tqdm(enumerate(valloader)):
                 #print(r'\n')
-                images_val = Variable(images_val.cuda(), requires_grad=False)
-                labels_val = Variable(labels_val.cuda(), requires_grad=False)
-                segments_val = Variable(segments.cuda(), requires_grad=False)
-                regions_val = Variable(regions.cuda(), requires_grad=False)
+                images_val = Variable(images_val.cuda(cuda_id), requires_grad=False)
+                labels_val = Variable(labels_val.cuda(cuda_id), requires_grad=False)
+                segments_val = Variable(segments.cuda(cuda_id), requires_grad=False)
+                regions_val = Variable(regions.cuda(cuda_id), requires_grad=False)
                 with torch.no_grad():
+                    
                     #depth,loss_var,loss_dis,loss_reg = model(images_val,segments_val,1,'test')
-                    depth,accurate = model(images_val,regions_val,1,'eval')
+                    depth,accurate,_,_,_ = model(images_val,regions_val,0,'eval')
+                    labels_val=labels_val.view_as(depth)
+                    mask=(labels_val>0)
                     # loss_d=berhu(depth,labels_val)
                     # loss=torch.sum(loss_var)+torch.sum(loss_dis)+0.001*torch.sum(loss_reg)
                     # loss=loss+loss_d
-                    lin=torch.sqrt(torch.mean(torch.pow(accurate-labels_val,2)))
+                    lin=torch.sqrt(torch.mean(torch.pow(accurate[mask]-labels_val[mask],2)))
                     # if accurate.shape[0]==4:
                     #     a=torch.sqrt(torch.mean(torch.pow(accurate[0,...]-labels_val[0,...],2)))
                     #     b=torch.sqrt(torch.mean(torch.pow(accurate[1,...]-labels_val[1,...],2)))
@@ -344,7 +441,7 @@ def train(args):
                     #             torch.sum(loss_dis).item()/4,0.001*torch.sum(loss_reg).item()/4))
                 if args.visdom:
                     vis.line(
-                        X=torch.ones(1).cpu() * i_val+torch.ones(1).cpu() *test*163,
+                        X=torch.ones(1).cpu() * i_val+torch.ones(1).cpu()*test*test_len,
                         Y=lin.item()*torch.ones(1).cpu(),
                         win=error_window,
                         update='append')
@@ -358,7 +455,7 @@ def train(args):
                     )
                     accurate = accurate.data.cpu().numpy().astype('float32')
                     accurate = accurate[0,...]
-                    accurate = np.abs((np.reshape(accurate, [480//scale, 640//scale]).astype('float32'))-ground)
+                    accurate = (np.reshape(accurate, [480//scale, 640//scale]).astype('float32'))
 
                     accurate=accurate/(np.max(accurate)+0.001)
                     vis.image(
@@ -400,19 +497,19 @@ def train(args):
                          'optimizer_state': optimizer.state_dict(),
                          'error': error,
                          }
-                torch.save(state, "{}_{}_{}_{}coarse_best_model.pkl".format(
+                torch.save(state, "{}_{}_{}_{}_cluster_best_model.pkl".format(
                     args.arch, args.dataset,str(epoch),str(error)))
                 print('save success')
             np.save('/home/lidong/Documents/RSCFN/loss.npy',loss_rec)
 
 
-        if epoch%10==0:
+        if epoch%1==0:
             #best_error = error
             state = {'epoch': epoch+1,
                      'model_state': model.state_dict(),
                      'optimizer_state': optimizer.state_dict(), 
                      'error': error,}
-            torch.save(state, "{}_{}_{}_coarse_model.pkl".format(
+            torch.save(state, "{}_{}_{}_cluster_model.pkl".format(
                 args.arch, args.dataset,str(epoch)))
             print('save success')
 
@@ -421,9 +518,9 @@ def train(args):
 if __name__ == '__main__':
     scale=2
     parser = argparse.ArgumentParser(description='Hyperparams')
-    parser.add_argument('--arch', nargs='?', type=str, default='rsn_cluster',
+    parser.add_argument('--arch', nargs='?', type=str, default='rsn_depth',
                         help='Architecture to use [\'region support network\']')
-    parser.add_argument('--dataset', nargs='?', type=str, default='nyu2',
+    parser.add_argument('--dataset', nargs='?', type=str, default='nyu',
                         help='Dataset to use [\'sceneflow and kitti etc\']')
     parser.add_argument('--img_rows', nargs='?', type=int, default=480//scale,
                         help='Height of the input image')
@@ -437,8 +534,8 @@ if __name__ == '__main__':
                         help='Learning Rate')
     parser.add_argument('--feature_scale', nargs='?', type=int, default=1,
                         help='Divider for # of features to use')
-    parser.add_argument('--resume', nargs='?', type=str, default='/home/lidong/Documents/RSCFN/rsn_cluster_nyu2_2_1.0102041coarse_best_model.pkl',
-                        help='Path to previous saved model to restart from /home/lidong/Documents/RSCFN/rsn_cluster_nyu2_0_1.2201247coarse_best_model.pkl')
+    parser.add_argument('--resume', nargs='?', type=str, default=None,
+                        help='Path to previous saved model to restart from /home/lidong/Documents/RSCFN/rsn_depth_nyu_2_1.0318788_cluster_best_model.pkl')
     parser.add_argument('--visdom', nargs='?', type=bool, default=True,
                         help='Show visualization(s) on visdom | False by  default')
     args = parser.parse_args()

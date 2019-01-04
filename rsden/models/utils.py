@@ -97,20 +97,24 @@ class conv2DBatchNormRelu(nn.Module):
         outputs = self.cbr_unit(inputs)
         return outputs
 class conv2DGroupNormRelu(nn.Module):
-    def __init__(self, in_channels, n_filters, k_size,  stride, padding=0, bias=True, dilation=1,group_dim=group_dim):
+    def __init__(self, in_channels, n_filters, k_size,  stride, padding=1, bias=True, dilation=1,group_dim=group_dim):
         super(conv2DGroupNormRelu, self).__init__()
-
+        
+        #padding=0
         if dilation > 1:
+            pad=nn.ReplicationPad2d(dilation)
             conv_mod = nn.Conv2d(int(in_channels), int(n_filters), kernel_size=k_size, 
-                                 padding=padding, stride=stride, bias=bias, dilation=dilation)
+                                 padding=0, stride=stride, bias=bias, dilation=dilation)
 
         else:
+            pad=nn.ReplicationPad2d(padding)
             conv_mod = nn.Conv2d(int(in_channels), int(n_filters), kernel_size=k_size, 
-                                 padding=padding, stride=stride, bias=bias, dilation=1)
+                                 padding=0, stride=stride, bias=bias, dilation=1)
 
-        self.cbr_unit = nn.Sequential(conv_mod,
+        self.cbr_unit = nn.Sequential(pad
+                                      ,conv_mod,
                                       nn.GroupNorm(group_dim,int(n_filters)),
-                                      nn.ReLU(inplace=True),)
+                                      nn.ReLU(inplace=True))
 
     def forward(self, inputs):
         outputs = self.cbr_unit(inputs)
@@ -118,9 +122,10 @@ class conv2DGroupNormRelu(nn.Module):
 
 
 class conv2D(nn.Module):
-    def __init__(self, in_channels, n_filters, k_size,  stride, padding=0, bias=True, dilation=1,group_dim=group_dim):
+    def __init__(self, in_channels, n_filters, k_size,  stride, padding=1, bias=True, dilation=1,group_dim=group_dim):
         super(conv2D, self).__init__()
-
+        pad=nn.ReplicationPad2d(padding)
+        padding=0
         if dilation > 1:
             conv_mod = nn.Conv2d(int(in_channels), int(n_filters), kernel_size=k_size, 
                                  padding=padding, stride=stride, bias=bias, dilation=dilation)
@@ -129,15 +134,16 @@ class conv2D(nn.Module):
             conv_mod = nn.Conv2d(int(in_channels), int(n_filters), kernel_size=k_size, 
                                  padding=padding, stride=stride, bias=bias, dilation=1)
 
-        self.cbr_unit = nn.Sequential(conv_mod,)
+        self.cbr_unit = nn.Sequential(pad,conv_mod)
 
     def forward(self, inputs):
         outputs = self.cbr_unit(inputs)
         return outputs
 class conv2DRelu(nn.Module):
-    def __init__(self, in_channels, n_filters, k_size,  stride, padding=0, bias=True, dilation=1,group_dim=group_dim):
+    def __init__(self, in_channels, n_filters, k_size,  stride, padding=1, bias=True, dilation=1,group_dim=group_dim):
         super(conv2DRelu, self).__init__()
-
+        pad=nn.ReplicationPad2d(padding)
+        padding=0
         if dilation > 1:
             conv_mod = nn.Conv2d(int(in_channels), int(n_filters), kernel_size=k_size, 
                                  padding=padding, stride=stride, bias=bias, dilation=dilation)
@@ -146,7 +152,7 @@ class conv2DRelu(nn.Module):
             conv_mod = nn.Conv2d(int(in_channels), int(n_filters), kernel_size=k_size, 
                                  padding=padding, stride=stride, bias=bias, dilation=1)
 
-        self.cbr_unit = nn.Sequential(conv_mod,
+        self.cbr_unit = nn.Sequential(pad,conv_mod,
                                       nn.ReLU(inplace=True),)
 
     def forward(self, inputs):
@@ -164,29 +170,80 @@ class deconv2DBatchNormRelu(nn.Module):
     def forward(self, inputs):
         outputs = self.dcbr_unit(inputs)
         return outputs
-class up2DGroupNormRelu(nn.Module):
-    def __init__(self, in_channels, n_filters, k_size, stride,output_padding=0, padding=0, bias=True,group_dim=group_dim):
-        super(up2DGroupNormRelu, self).__init__()
+class uppooling(nn.Module):
+    def __init__(self, in_channels, n_filters, k_size=3, stride=1,output_padding=0, padding=0, bias=False,group_dim=group_dim,check=False):
+        super(uppooling, self).__init__()
 
-        self.dcbr_unit = nn.Sequential(conv2DGroupNormRelu(int(in_channels), int(n_filters), k_size=k_size,
-                                                padding=padding, stride=stride, bias=bias),
-                                 nn.GroupNorm(group_dim,int(n_filters)),
-                                 nn.ReLU(inplace=True),)
-
+        self.conva = nn.Sequential( nn.ReplicationPad2d(1),
+                                    nn.Conv2d(int(in_channels), int(n_filters), kernel_size=(3,3),padding=0, stride=1, bias=bias)
+                                   )
+        self.convb = nn.Sequential( nn.ReplicationPad2d((1,1,1,0)),
+                                    nn.Conv2d(int(in_channels), int(n_filters), kernel_size=(2,3),padding=0, stride=1, bias=bias)
+                                   )
+        self.convc = nn.Sequential( nn.ReplicationPad2d((1,0,1,1)),
+                                    nn.Conv2d(int(in_channels), int(n_filters), kernel_size=(3,2),padding=0, stride=1, bias=bias)
+                                   )
+        self.convd = nn.Sequential( nn.ReplicationPad2d((1,0,1,0)),
+                                    nn.Conv2d(int(in_channels), int(n_filters), kernel_size=(2,2),padding=0, stride=1, bias=bias)
+                                   )
+        self.norm=nn.GroupNorm(group_dim,int(n_filters))
+        self.check=check
+        self.relu=nn.ReLU(inplace=True)
+        self.stride=stride
+    def forward(self, x):
+        outa=self.conva(x)
+        outb=self.convb(x)
+        outc=self.convc(x)
+        outd=self.convd(x)
+        #print(x.shape,outa.shape,outb.shape)
+        outab=torch.reshape(torch.stack((outa,outb),dim=-1),(outa.shape[0],outa.shape[1],outa.shape[2],2*outa.shape[3]))
+        outcd=torch.reshape(torch.stack((outc,outd),dim=-1),(outc.shape[0],outc.shape[1],outc.shape[2],2*outc.shape[3]))
+        outputs=torch.reshape(torch.stack((outab,outcd),dim=-2),(outc.shape[0],outc.shape[1],2*outc.shape[2],2*outc.shape[3]))
+        outputs=self.norm(outputs)
+        if self.check==True:
+            outputs=self.relu(outputs)
+        return outputs
+class upprojection(nn.Module):
+    def __init__(self, in_channels, n_filters, k_size=3, stride=2,output_padding=0, padding=0, bias=True,group_dim=group_dim):
+        super(upprojection, self).__init__()
+        self.uppool1=uppooling(in_channels, n_filters,check=True)
+        self.conv1=nn.Sequential( nn.ReplicationPad2d(1),
+                                    nn.Conv2d(int(in_channels), int(n_filters), kernel_size=(3,3),padding=0, stride=1, bias=bias)
+                                   )
+        self.uppool2=uppooling(in_channels, n_filters,check=False)
+        self.relu=nn.ReLU(inplace=True)
+        self.stride=stride
     def forward(self, inputs):
         h, w = inputs.shape[-2:]
         #print(h,w)
-        inputs=F.interpolate(inputs, size=(h*2,w*2), mode='bilinear',align_corners=True)
+        x=self.uppool1(inputs)
+        x=self.conv1(x)
+        y=self.uppool2(inputs)
+        outputs=x+y
+        outputs=self.relu(outputs)
+        return outputs
+class up2DGroupNormRelu(nn.Module):
+    def __init__(self, in_channels, n_filters, k_size, stride=2,output_padding=0, padding=0, bias=True,group_dim=group_dim):
+        super(up2DGroupNormRelu, self).__init__()
+
+        self.dcbr_unit = nn.Sequential(conv2DGroupNormRelu(int(in_channels), int(n_filters), k_size=k_size,
+                                                padding=padding, stride=1, bias=bias))
+        self.stride=stride
+    def forward(self, inputs):
+        h, w = inputs.shape[-2:]
+        #print(h,w)
+        inputs=F.interpolate(inputs, size=(h*self.stride,w*self.stride), mode='bilinear',align_corners=False)
         outputs = self.dcbr_unit(inputs)
         return outputs
 class deconv2DGroupNormRelu(nn.Module):
     def __init__(self, in_channels, n_filters, k_size, stride,output_padding=0, padding=0, bias=True,group_dim=group_dim):
         super(deconv2DGroupNormRelu, self).__init__()
-
-        self.dcbr_unit = nn.Sequential(nn.ConvTranspose2d(int(in_channels), int(n_filters), kernel_size=k_size,
+        self.dcbr_unit = nn.Sequential( 
+                                        nn.ConvTranspose2d(int(in_channels), int(n_filters), kernel_size=k_size,
                                                 padding=padding, stride=stride, bias=bias,output_padding=output_padding),
-                                 nn.GroupNorm(group_dim,int(n_filters)),
-                                 nn.ReLU(inplace=True),)
+                                        # nn.ReplicationPad2d((1,0,1,0)),
+                                        nn.GroupNorm(group_dim,int(n_filters)),
+                                        nn.ReLU(inplace=True))
 
     def forward(self, inputs):
         outputs = self.dcbr_unit(inputs)
@@ -212,8 +269,12 @@ class pyramidPoolingGroupNorm(nn.Module):
 
         self.paths = []
         for i in range(len(pool_sizes)):
-            self.paths.append(conv2DGroupNormRelu(in_channels=in_channels, k_size=3, n_filters=int(in_channels / len(pool_sizes)),
+            if pool_sizes[i][0]>1:
+                self.paths.append(conv2DGroupNormRelu(in_channels=in_channels, k_size=3, n_filters=int(in_channels / len(pool_sizes)),
                                                 padding=1, stride=1, bias=False,group_dim=group_dim))
+            else:
+                self.paths.append(conv2DGroupNormRelu(in_channels=in_channels, k_size=1, n_filters=int(in_channels / len(pool_sizes)),
+                                                padding=0, stride=1, bias=False,group_dim=group_dim))
 
         self.path_module_list = nn.ModuleList(self.paths)
         self.pool_sizes = pool_sizes
@@ -222,17 +283,88 @@ class pyramidPoolingGroupNorm(nn.Module):
         output_slices = [x]
         h, w = x.shape[2:]
         #print(h,w)
+        for module, pool_size in zip(self.path_module_list, self.pool_sizes):
+            if pool_size[0]>1:
+                out = F.adaptive_avg_pool2d(x, ((h//pool_size[0], w//pool_size[1])))
+            else:
+                out = F.adaptive_avg_pool2d(x, ((pool_size[0], pool_size[1])))
+            #print(out.shape)
+            #print(pool_size)
+            out = module(out)
+            out = F.interpolate(out, size=(h,w), mode='bilinear',align_corners=False)
+            output_slices.append(out)
+
+        return torch.cat(output_slices, dim=1)
+class pyramidPoolingGroupNorm_constant(nn.Module):
+
+    def __init__(self, in_channels, pool_sizes,group_dim):
+        super(pyramidPoolingGroupNorm_constant, self).__init__()
+
+        self.paths = []
+        for i in range(len(pool_sizes)):
+            self.paths.append(conv2DGroupNormRelu(in_channels=in_channels, k_size=3, n_filters=128,
+                                                padding=1, stride=1, bias=False,group_dim=group_dim))
+
+        self.path_module_list = nn.ModuleList(self.paths)
+        self.pool_sizes = pool_sizes
+        self.adjust=conv2DGroupNormRelu(in_channels=in_channels, k_size=1, n_filters=128,
+                                                padding=0,dilation=1, stride=1, bias=False,group_dim=group_dim)
+    def forward(self, x):
+        output_slices = []
+        h, w = x.shape[2:]
+        adjust=self.adjust(x)
+        output_slices.append(adjust)
+        #print(h,w)
         for module, pool_size in zip(self.path_module_list, self.pool_sizes): 
             out = F.adaptive_avg_pool2d(x, ((pool_size[0], pool_size[1])))
             #print(pool_size)
             out = module(out)
-            out = F.interpolate(out, size=(h,w), mode='bilinear',align_corners=True)
+            out = F.interpolate(out, size=(h,w), mode='bilinear',align_corners=False)
             output_slices.append(out)
 
         return torch.cat(output_slices, dim=1)
+class AtrouspyramidPoolingGroupNorm(nn.Module):
 
+    def __init__(self, in_channels, dilation,group_dim,kernel):
+        super(AtrouspyramidPoolingGroupNorm, self).__init__()
 
+        self.paths = []
+        for i in range(len(dilation)):
+            if i==0:
+                self.paths.append(conv2DGroupNormRelu(in_channels=in_channels, k_size=kernel[i], n_filters=int(in_channels / len(dilation)),
+                                    padding=dilation[i]-1,dilation=dilation[i], stride=1, bias=False,group_dim=group_dim))
+            else:
+                self.paths.append(conv2DGroupNormRelu(in_channels=in_channels, k_size=kernel[i], n_filters=int(in_channels / len(dilation)),
+                                                padding=dilation[i],dilation=dilation[i], stride=1, bias=False,group_dim=group_dim))
 
+        self.path_module_list = nn.ModuleList(self.paths)
+
+        self.global_avg_pool = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)),
+                                             conv2DGroupNormRelu(in_channels=in_channels, k_size=1, n_filters=int(in_channels / len(dilation)),
+                                                padding=0,dilation=1, stride=1, bias=False,group_dim=group_dim))
+        self.dilation = dilation
+        self._init_weight()
+    def forward(self, x):
+        output_slices = [x]
+        h, w = x.shape[2:]
+        out = self.global_avg_pool(x)
+        out = F.interpolate(out, size=(h,w), mode='bilinear',align_corners=False)
+        output_slices.append(out)
+        #print(h,w)
+        for module, pool_size in zip(self.path_module_list, self.dilation): 
+            
+            #print(pool_size)
+            out = module(x)
+            output_slices.append(out)
+
+        return torch.cat(output_slices, dim=1)
+    def _init_weight(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                torch.nn.init.kaiming_normal_(m.weight)
+            elif isinstance(m, nn.GroupNorm):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
 class pyramidPooling(nn.Module):
 
     def __init__(self, in_channels, pool_sizes,group_dim):
@@ -254,7 +386,7 @@ class pyramidPooling(nn.Module):
             out = F.adaptive_avg_pool2d(x, ((pool_size[0], pool_size[1])))
             #print(pool_size)
             out = module(out)
-            out = F.interpolate(out, size=(h,w), mode='bilinear',align_corners=True)
+            out = F.interpolate(out, size=(h,w), mode='bilinear',align_corners=False)
             output_slices.append(out)
 
         return torch.cat(output_slices, dim=1)
@@ -279,7 +411,7 @@ class pyramidPooling_witoutbn(nn.Module):
             out = F.adaptive_avg_pool2d(x, ((pool_size[0], pool_size[1])))
             #print(pool_size)
             out = module(out)
-            out = F.interpolate(out, size=(h,w), mode='bilinear',align_corners=True)
+            out = F.interpolate(out, size=(h,w), mode='bilinear',align_corners=False)
             output_slices.append(out)
 
         return torch.cat(output_slices, dim=1)
@@ -328,7 +460,7 @@ class globalPooling_withoutbn(nn.Module):
         #out=self.final5(out)
         #out=self.final6(out)
         out=self.final7(out)
-        out = F.interpolate(out, size=(h,w), mode='bilinear',align_corners=True)
+        out = F.interpolate(out, size=(h,w), mode='bilinear',align_corners=False)
 
 
         return out
@@ -377,7 +509,7 @@ class globalPooling(nn.Module):
         #out=self.final5(out)
         #out=self.final6(out)
         out=self.final7(out)
-        out = F.interpolate(out, size=(h,w), mode='bilinear',align_corners=True)
+        out = F.interpolate(out, size=(h,w), mode='bilinear',align_corners=False)
 
 
         return out

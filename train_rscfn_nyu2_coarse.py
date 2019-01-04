@@ -2,7 +2,7 @@
 # @Author: lidong
 # @Date:   2018-03-18 13:41:34
 # @Last Modified by:   yulidong
-# @Last Modified time: 2018-10-25 19:16:55
+# @Last Modified time: 2018-10-29 12:32:08
 import sys
 import torch
 import visdom
@@ -42,7 +42,7 @@ def train(args):
 
     n_classes = t_loader.n_classes
     trainloader = data.DataLoader(
-        t_loader, batch_size=args.batch_size, num_workers=4, shuffle=False)
+        t_loader, batch_size=args.batch_size, num_workers=4, shuffle=True)
     valloader = data.DataLoader(
         v_loader, batch_size=args.batch_size, num_workers=4, shuffle=False)
 
@@ -66,6 +66,10 @@ def train(args):
         ground_window = vis.image(
             np.random.rand(480//scale, 640//scale),
             opts=dict(title='ground!', caption='ground.'),
+        )
+        image_window = vis.image(
+            np.random.rand(480//scale, 640//scale),
+            opts=dict(title='img!', caption='img.'),
         )
         loss_window = vis.line(X=torch.zeros((1,)).cpu(),
                                Y=torch.zeros((1)).cpu(),
@@ -97,11 +101,11 @@ def train(args):
     if hasattr(model.module, 'optimizer'):
         optimizer = model.module.optimizer
     else:
-        optimizer = torch.optim.Adam(
-            model.parameters(), lr=args.l_rate,weight_decay=5e-4,betas=(0.9,0.999),amsgrad=True)
-        # optimizer = torch.optim.SGD(
-        #     model.parameters(), lr=args.l_rate,momentum=0.90, weight_decay=5e-4)
-    #scheduler=torch.optim.lr_scheduler.StepLR(optimizer,step_size=30,gamma=0.5)
+        # optimizer = torch.optim.Adam(
+        #     model.parameters(), lr=args.l_rate,betas=(0.9,0.999),amsgrad=True)
+        optimizer = torch.optim.SGD(
+            model.parameters(), lr=args.l_rate,momentum=0.90)
+    # scheduler=torch.optim.lr_scheduler.StepLR(optimizer,step_size=30,gamma=0.5)
     if hasattr(model.module, 'loss'):
         print('Using custom loss')
         loss_fn = model.module.loss
@@ -122,15 +126,15 @@ def train(args):
             print("Loaded checkpoint '{}' (epoch {})"
                   .format(args.resume, checkpoint['epoch']))
             trained=checkpoint['epoch']
+            best_error=checkpoint['error']
             print(best_error)
             print(trained)
-            loss_rec=np.load('/home/lidong/Documents/RSDEN/RSDEN/loss.npy')
+            loss_rec=np.load('/home/lidong/Documents/RSCFN/loss.npy')
             loss_rec=list(loss_rec)
             loss_rec=loss_rec[:199*trained]
             test=0
             #exit()
-            best_error=checkpoint['error']
-            #trained=0
+            trained=0
             
     else:
         best_error=100
@@ -140,11 +144,11 @@ def train(args):
         
         print("No checkpoint found at '{}'".format(args.resume))
         print('Initialize from rsn!')
-        rsn=torch.load('/home/lidong/Documents/RSCFN/rsn_cluster_nyu2_37_coarse_best_model.pkl',map_location='cpu')
+        rsn=torch.load('/home/lidong/Documents/RSCFN/rsn_cluster_nyu2_124_1.103912coarse_best_model.pkl',map_location='cpu')
         model_dict=model.state_dict()  
         #print(model_dict)          
-        #pre_dict={k: v for k, v in rsn['model_state'].items() if k in model_dict and rsn['model_state'].items()}
         pre_dict={k: v for k, v in rsn['model_state'].items() if k in model_dict and rsn['model_state'].items()}
+        #pre_dict={k: v for k, v in rsn.items() if k in model_dict and rsn.items()}
         #print(pre_dict)
         key=[]
         for k,v in pre_dict.items():
@@ -152,19 +156,20 @@ def train(args):
                 key.append(k)
         for k in key:
             pre_dict.pop(k)
-        #print(pre_dict)
+        # #print(pre_dict)
         model_dict.update(pre_dict)
         model.load_state_dict(model_dict)
         #optimizer.load_state_dict(rsn['optimizer_state'])
         trained=rsn['epoch']
         best_error=rsn['error']
-        #best_error_d=checkpoint['error_d']
         print('load success!')
         print(best_error)
         best_error+=1
-        del rsn
+        #del rsn
         test=0
-        trained=0
+        # loss_rec=np.load('/home/lidong/Documents/RSCFN/loss.npy')
+        # loss_rec=list(loss_rec)
+        # loss_rec=loss_rec[:199*trained]
         #exit()
         
 
@@ -176,7 +181,7 @@ def train(args):
         print('training!')
         model.train()
         
-        for i, (images, labels,regions,segments) in enumerate(trainloader):
+        for i, (images, labels,regions,segments,image) in enumerate(trainloader):
             #break
             images = Variable(images.cuda())
             labels = Variable(labels.cuda())
@@ -191,11 +196,13 @@ def train(args):
             depth,accurate = model(images,regions,1,'eval')
             print('depth',torch.mean(depth).item())
             print('accurate',torch.mean(accurate).item())
-            loss_d=berhu_log(depth,labels)
+            print('ground',torch.mean(labels).item())
+            loss_d=log_loss(depth,labels)
             #loss_i=berhu_log(intial,labels)
             loss_a=berhu_log(accurate,labels)
             #loss_d=log_loss(depth,labels)
-            loss=torch.sqrt(torch.mean(torch.pow(accurate-labels,2)))
+            #loss=log_loss(depth, labels)
+            loss=loss_d
             #loss=torch.sum(loss_var)+torch.sum(loss_dis)+0.001*torch.sum(loss_reg)
             #loss=loss/4+loss_d
             #loss/=feature.shape[0]
@@ -203,9 +210,11 @@ def train(args):
             # loss_d=berhu(depth,labels)
             lin=torch.sqrt(torch.mean(torch.pow(accurate-labels,2)))
             # loss=loss_d
+            if loss.item()>10:
+                loss=loss/10
             loss.backward()
             optimizer.step()
-            print(torch.mean(depth).item())
+            #print(torch.mean(depth).item())
             if args.visdom:
                 with torch.no_grad():
    
@@ -219,14 +228,6 @@ def train(args):
                         Y=lin.item()*torch.ones(1).cpu(),
                         win=lin_window,
                         update='append')
-                    accurate = accurate.data.cpu().numpy().astype('float32')
-                    accurate = accurate[0,...]
-                    accurate = (np.reshape(accurate, [480//scale, 640//scale]).astype('float32'))/(np.max(accurate)+0.001)
-                    vis.image(
-                        accurate,
-                        opts=dict(title='accurate!', caption='accurate.'),
-                        win=accurate_window,
-                    )                 
                     ground=labels.data.cpu().numpy().astype('float32')
                     ground = ground[0, :, :]
                     ground = (np.reshape(ground, [480//scale, 640//scale]).astype('float32'))/(np.max(ground)+0.001)
@@ -235,6 +236,15 @@ def train(args):
                         opts=dict(title='ground!', caption='ground.'),
                         win=ground_window,
                     )
+                    accurate = accurate.data.cpu().numpy().astype('float32')
+                    accurate = accurate[0,...]
+                    accurate = np.abs((np.reshape(accurate, [480//scale, 640//scale]).astype('float32'))/(np.max(accurate)+0.001)-ground)
+                    vis.image(
+                        accurate,
+                        opts=dict(title='accurate!', caption='accurate.'),
+                        win=accurate_window,
+                    )                 
+
                     depth = depth.data.cpu().numpy().astype('float32')
                     depth = depth[0, :, :, :]
                     #depth=np.where(depth>np.max(ground),np.max(ground),depth)
@@ -244,7 +254,16 @@ def train(args):
                         opts=dict(title='depth!', caption='depth.'),
                         win=depth_window,
                     )
-
+                    image=image.data.cpu().numpy().astype('float32')
+                    image = image[0,...]
+                    #image=image[0,...]
+                    #print(image.shape,np.min(image))
+                    image = np.reshape(image, [3,480//scale, 640//scale]).astype('float32')
+                    vis.image(
+                        image,
+                        opts=dict(title='image!', caption='image.'),
+                        win=image_window,
+                    ) 
             loss_rec.append([i+epoch*199,torch.Tensor([loss.item()]).unsqueeze(0).cpu()])
             
             print("data [%d/199/%d/%d] Loss: %.4f d: %.4f loss_d:%.4f loss_a:%.4f" % (i, epoch, args.n_epoch,loss.item(),lin.item(), loss_d.item(),loss_a.item()))
@@ -271,7 +290,7 @@ def train(args):
         if epoch>90:
             check=1
             #scheduler=torch.optim.lr_scheduler.StepLR(optimizer,step_size=30,gamma=0.1)  
-        check=1
+        # check=1
         #epoch=3          
         if epoch%check==0:
                 
@@ -281,7 +300,7 @@ def train(args):
             loss_d_ave=[]
             loss_lin_ave=[]
             loss_r_ave=[]
-            for i_val, (images_val, labels_val,regions,segments) in tqdm(enumerate(valloader)):
+            for i_val, (images_val, labels_val,regions,segments,image) in tqdm(enumerate(valloader)):
                 #print(r'\n')
                 images_val = Variable(images_val.cuda(), requires_grad=False)
                 labels_val = Variable(labels_val.cuda(), requires_grad=False)
@@ -306,14 +325,6 @@ def train(args):
                         Y=lin.item()*torch.ones(1).cpu(),
                         win=error_window,
                         update='append')
-                    accurate = accurate.data.cpu().numpy().astype('float32')
-                    accurate = accurate[0,...]
-                    accurate = (np.reshape(accurate, [480//scale, 640//scale]).astype('float32'))/(np.max(accurate)+0.001)
-                    vis.image(
-                        accurate,
-                        opts=dict(title='accurate!', caption='accurate.'),
-                        win=accurate_window,
-                    )                 
                     ground=labels_val.data.cpu().numpy().astype('float32')
                     ground = ground[0, :, :]
                     ground = (np.reshape(ground, [480//scale, 640//scale]).astype('float32'))/(np.max(ground)+0.001)
@@ -322,6 +333,17 @@ def train(args):
                         opts=dict(title='ground!', caption='ground.'),
                         win=ground_window,
                     )
+                    accurate = accurate.data.cpu().numpy().astype('float32')
+                    accurate = accurate[0,...]
+                    accurate = np.abs((np.reshape(accurate, [480//scale, 640//scale]).astype('float32'))-ground)
+
+                    accurate=accurate/(np.max(accurate)+0.001)
+                    vis.image(
+                        accurate,
+                        opts=dict(title='accurate!', caption='accurate.'),
+                        win=accurate_window,
+                    )                 
+
                     depth = depth.data.cpu().numpy().astype('float32')
                     depth = depth[0, :, :, :]
                     #depth=np.where(depth>np.max(ground),np.max(ground),depth)
@@ -330,7 +352,17 @@ def train(args):
                         depth,
                         opts=dict(title='depth!', caption='depth.'),
                         win=depth_window,
-                    )            
+                    )
+                    image=image.data.cpu().numpy().astype('float32')
+                    image = image[0,...]
+                    #image=image[0,...]
+                    #print(image.shape,np.min(image))
+                    image = np.reshape(image, [3,480//scale, 640//scale]).astype('float32')
+                    vis.image(
+                        image,
+                        opts=dict(title='image!', caption='image.'),
+                        win=image_window,
+                    ) 
             error=np.mean(loss_ave)
             #error_d=np.mean(loss_d_ave)
             #error_lin=np.mean(loss_lin_ave)
@@ -345,8 +377,8 @@ def train(args):
                          'optimizer_state': optimizer.state_dict(),
                          'error': error,
                          }
-                torch.save(state, "{}_{}_{}_coarse_best_model.pkl".format(
-                    args.arch, args.dataset,str(epoch)))
+                torch.save(state, "{}_{}_{}_{}coarse_best_model.pkl".format(
+                    args.arch, args.dataset,str(epoch),str(error)))
                 print('save success')
             np.save('/home/lidong/Documents/RSCFN/loss.npy',loss_rec)
 
@@ -360,8 +392,6 @@ def train(args):
             torch.save(state, "{}_{}_{}_coarse_model.pkl".format(
                 args.arch, args.dataset,str(epoch)))
             print('save success')
-
-
 
 
 
@@ -385,7 +415,7 @@ if __name__ == '__main__':
     parser.add_argument('--feature_scale', nargs='?', type=int, default=1,
                         help='Divider for # of features to use')
     parser.add_argument('--resume', nargs='?', type=str, default=None,
-                        help='Path to previous saved model to restart from /home/lidong/Documents/RSCFN/rsn_cluster_nyu2_37_coarse_best_model.pkl')
+                        help='Path to previous saved model to restart from /home/lidong/Documents/RSCFN/rsn_cluster_nyu2_229_1.2563447coarse_best_model.pkl')
     parser.add_argument('--visdom', nargs='?', type=bool, default=True,
                         help='Show visualization(s) on visdom | False by  default')
     args = parser.parse_args()
