@@ -2,7 +2,7 @@
 # @Author: yulidong
 # @Date:   2018-04-25 23:06:40
 # @Last Modified by:   yulidong
-# @Last Modified time: 2018-05-12 11:05:56
+# @Last Modified time: 2018-08-10 11:14:54
 
 
 import os
@@ -66,6 +66,7 @@ class KITTI(data.Dataset):
         :param depth:
         """
         img = img[:,:,:]
+        img=img[:,:,::-1]
         #print(img.shape)
         img = img.astype(np.float64)
         # Resize scales images from 0 to 255, thus we need
