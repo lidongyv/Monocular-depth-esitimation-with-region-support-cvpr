@@ -2,7 +2,7 @@
 # @Author: yulidong
 # @Date:   2018-04-25 23:06:40
 # @Last Modified by:   yulidong
-# @Last Modified time: 2019-01-02 21:06:01
+# @Last Modified time: 2019-01-12 21:24:31
 
 
 import os
@@ -181,7 +181,8 @@ class NYU(data.Dataset):
         # region=F.interpolate(region,scale_factor=1/2,mode='bilinear',align_corners=False).squeeze()[6:-6,8:-8]
         # segments=F.interpolate(segments,scale_factor=1/2,mode='bilinear',align_corners=False).squeeze()[6:-6,8:-8]
         if self.split=='train':
-            one=torch.ones(1)
+            one=torch.ones(1).float()
+            zero=torch.zeros(1).float()
             scale=random.uniform(1, 1.3)
             mask=(depth>alpha)&(depth<beta)
             mask=mask.float()
@@ -251,13 +252,13 @@ class NYU(data.Dataset):
             depth=totensor(depth)*md/scale
             mask=totensor(mask)
             #print(torch.sum(mask))
-            depth=torch.where(mask>0,depth,torch.zeros(1).float())
+            depth=torch.where(mask>0,depth,zero)
             #print(torch.max(depth))
             #print(torch.max(depth),scale)
             region=totensor(region)*mr
             segments=totensor(segments)*ms
-            depth=torch.where(depth>beta,beta*one,depth)
-            depth=torch.where(depth<alpha,alpha*one,depth)
+            depth=torch.where(depth>beta,beta*zero,depth)
+            depth=torch.where(depth<alpha,alpha*zero,depth)
             #exit()
 
         else:
@@ -272,8 +273,8 @@ class NYU(data.Dataset):
             #mask=F.interpolate(mask,scale_factor=1/2,mode='bilinear',align_corners=False).squeeze()
             #print(torch.sum(mask))
             #depth=torch.where(mask>=1,depth,torch.zeros(1).float())
-            depth=torch.where(depth>beta,beta*one,depth)
-            depth=torch.where(depth<alpha,alpha*one,depth)
+            depth=torch.where(depth>beta,beta*zero,depth)
+            depth=torch.where(depth<alpha,alpha*zero,depth)
             #depth=depth.squeeze()
             region=F.interpolate(region,scale_factor=1/2,mode='bilinear',align_corners=False).squeeze()
 

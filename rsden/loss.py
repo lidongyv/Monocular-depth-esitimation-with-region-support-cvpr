@@ -2,7 +2,7 @@
 # @Author: lidong
 # @Date:   2018-03-18 16:31:14
 # @Last Modified by:   yulidong
-# @Last Modified time: 2019-01-03 22:27:16
+# @Last Modified time: 2019-01-12 14:09:16
 
 import torch
 import numpy as np
@@ -236,38 +236,68 @@ def l2(input, target, weight=None, size_average=True):
     relation=loss(input,target) 
 
     return relation
-def v_loss(accurate,depth,label,mask):
+def v_loss_log(accurate,depth,label,mask):
     label=torch.reshape(label,(accurate.shape)).float()
     #l1=torch.nn.L1Loss(reduction='none')
-    #depth=depth.detach()
-    #variance_g=label-depth
-    variance_p=accurate-depth
+    accurate=torch.log10(accurate+1e-3) 
+    depth=torch.log10(depth+1e-3) 
+    label=torch.log10(label+1e-3) 
+    depth=depth.detach()
+    label=label.detach()
+    #variance_g=torch.where(torch.abs(label-depth)>1,torch.abs(label-depth),torch.pow(label-depth,2))
+    #variance_p=torch.where(torch.abs(accurate-depth)>1,torch.abs(accurate-depth),torch.pow(accurate-depth,2))
+    variance_g=torch.abs(label-depth)
+    variance_p=torch.abs(accurate-depth)
     #var_l=l1(variance_p,variance_g)
     #loss=torch.mean(torch.sum(torch.where(mask>0,var_l,mask).view(accurate.shape[0],-1),dim=-1)/torch.sum(mask.view(accurate.shape[0],-1),dim=-1))
-    # loss=torch.mean(torch.sum(torch.where(mask>0,variance_g,mask).view(accurate.shape[0],-1),dim=-1)/torch.sum(mask.view(accurate.shape[0],-1),dim=-1)) \
-    # -torch.mean(torch.sum(torch.where(mask>0,variance_p,mask).view(accurate.shape[0],-1),dim=-1)/torch.sum(mask.view(accurate.shape[0],-1),dim=-1))
+    loss=torch.mean(torch.abs(torch.sum(torch.where(mask>0,variance_g,mask).view(accurate.shape[0],-1),dim=-1)/torch.sum(mask.view(accurate.shape[0],-1),dim=-1) \
+    -torch.sum(torch.where(mask>0,variance_p,mask).view(accurate.shape[0],-1),dim=-1)/torch.sum(mask.view(accurate.shape[0],-1),dim=-1)))
     #loss=torch.mean(torch.where(torch.le(l1_loss,c),l1_loss,l2_loss))
     #print(torch.mean(torch.sum(torch.where(mask>0,variance_g,mask).view(accurate.shape[0],-1),dim=-1)/torch.sum(mask.view(accurate.shape[0],-1),dim=-1)))
     #print(torch.mean(torch.sum(torch.where(mask>0,variance_p,mask).view(accurate.shape[0],-1),dim=-1)/torch.sum(mask.view(accurate.shape[0],-1),dim=-1)))
     #loss=torch.mean(torch.sum(torch.abs(torch.where(mask>0,variance_g-variance_p,mask)).view(accurate.shape[0],-1),dim=-1)/(torch.sum(mask.view(accurate.shape[0],-1),dim=-1)+1))
-    loss=torch.mean(torch.sum(torch.abs(torch.where(mask>0,variance_p,mask)).view(accurate.shape[0],-1),dim=-1)/(torch.sum(mask.view(accurate.shape[0],-1),dim=-1)+1))
+    #loss=torch.mean(torch.sum(torch.abs(torch.where(mask>0,variance_p,mask)).view(accurate.shape[0],-1),dim=-1)/(torch.sum(mask.view(accurate.shape[0],-1),dim=-1)+1))
+    #print(loss)
+    return loss
+def v_loss(accurate,depth,label,mask):
+    label=torch.reshape(label,(accurate.shape)).float()
+    #l1=torch.nn.L1Loss(reduction='none')
+    depth=depth.detach()
+    label=label.detach()
+    #variance_g=torch.where(torch.abs(label-depth)>1,torch.abs(label-depth),torch.pow(label-depth,2))
+    #variance_p=torch.where(torch.abs(accurate-depth)>1,torch.abs(accurate-depth),torch.pow(accurate-depth,2))
+    variance_g=torch.abs(label-depth)
+    variance_p=torch.abs(accurate-depth)
+    #var_l=l1(variance_p,variance_g)
+    #loss=torch.mean(torch.sum(torch.where(mask>0,var_l,mask).view(accurate.shape[0],-1),dim=-1)/torch.sum(mask.view(accurate.shape[0],-1),dim=-1))
+    loss=torch.mean(torch.abs(torch.sum(torch.where(mask>0,variance_g,mask).view(accurate.shape[0],-1),dim=-1)/torch.sum(mask.view(accurate.shape[0],-1),dim=-1) \
+    -torch.sum(torch.where(mask>0,variance_p,mask).view(accurate.shape[0],-1),dim=-1)/torch.sum(mask.view(accurate.shape[0],-1),dim=-1)))
+    #loss=torch.mean(torch.where(torch.le(l1_loss,c),l1_loss,l2_loss))
+    #print(torch.mean(torch.sum(torch.where(mask>0,variance_g,mask).view(accurate.shape[0],-1),dim=-1)/torch.sum(mask.view(accurate.shape[0],-1),dim=-1)))
+    #print(torch.mean(torch.sum(torch.where(mask>0,variance_p,mask).view(accurate.shape[0],-1),dim=-1)/torch.sum(mask.view(accurate.shape[0],-1),dim=-1)))
+    #loss=torch.mean(torch.sum(torch.abs(torch.where(mask>0,variance_g-variance_p,mask)).view(accurate.shape[0],-1),dim=-1)/(torch.sum(mask.view(accurate.shape[0],-1),dim=-1)+1))
+    #loss=torch.mean(torch.sum(torch.abs(torch.where(mask>0,variance_p,mask)).view(accurate.shape[0],-1),dim=-1)/(torch.sum(mask.view(accurate.shape[0],-1),dim=-1)+1))
+    #print(loss)
     return loss
 def berhu(input,target,mask):
     #print(input.shape,target.shape,mask.shape)
     #exit()
     target=torch.reshape(target,(input.shape)).float()
+    zero=torch.zeros_like(torch.min(target))
     l1=torch.nn.L1Loss(reduction='none')
     l2=torch.nn.MSELoss(reduction='none')
     l1_loss=l1(input,target)
     l2_loss=l2(input, target)
-    c=torch.max(l1_loss)/5
+    c=torch.max(torch.where(mask>0,l1_loss,zero))/5
     l2_loss=(l2_loss+torch.pow(c,2))/(2*c)
     #loss=torch.mean(torch.sum(torch.where(mask>0,torch.where(torch.le(l1_loss,c),l1_loss,l2_loss),mask).view(input.shape[0],-1),dim=-1)/torch.sum(mask.view(input.shape[0],-1),dim=-1))
     loss=torch.sum(torch.where(mask>0,torch.where(torch.le(l1_loss,c),l1_loss,l2_loss),mask).view(input.shape[0],-1),dim=-1)/(torch.sum(mask.view(input.shape[0],-1),dim=-1)+1)
     #loss=torch.mean(torch.where(torch.le(l1_loss,c),l1_loss,l2_loss))
     loss=torch.sum(loss)/input.shape[0]
+    if torch.isnan(loss):
+        exit(0)
     return loss
-def berhu_log(input,target):
+def berhu_log(input,target,mask):
     #print(input.shape,target.shape)
     target=torch.reshape(target,(input.shape)).float()
     input=torch.log(input+1e-3) 
@@ -276,10 +306,14 @@ def berhu_log(input,target):
     l2=torch.nn.MSELoss(reduction='none')
     l1_loss=l1(input,target)
     l2_loss=l2(input, target)
-    c=torch.max(l1_loss)/5
-    l2=(l2_loss+torch.pow(c,2))/(2*c)
-    loss=torch.mean(torch.where(torch.le(l1_loss,c),l1_loss,l2))
+    c=torch.max(torch.where(mask>0,l1_loss,0))/5
+    l2_loss=(l2_loss+torch.pow(c,2))/(2*c)
+    #loss=torch.mean(torch.sum(torch.where(mask>0,torch.where(torch.le(l1_loss,c),l1_loss,l2_loss),mask).view(input.shape[0],-1),dim=-1)/torch.sum(mask.view(input.shape[0],-1),dim=-1))
+    loss=torch.sum(torch.where(mask>0,torch.where(torch.le(l1_loss,c),l1_loss,l2_loss),mask).view(input.shape[0],-1),dim=-1)/(torch.sum(mask.view(input.shape[0],-1),dim=-1)+1)
+    #loss=torch.mean(torch.where(torch.le(l1_loss,c),l1_loss,l2_loss))
+    loss=torch.sum(loss)/input.shape[0]
     return loss
+
 def log_loss(input, target, weight=None, size_average=True):
     # num=torch.sum(torch.where(input==0,torch.ones_like(input),torch.zeros_like(input)))
     # positive=num/torch.sum(toerch.ones_like(input))e

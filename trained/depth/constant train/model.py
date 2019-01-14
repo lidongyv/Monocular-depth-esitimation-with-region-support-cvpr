@@ -2,7 +2,7 @@
 # @Author: lidong
 # @Date:   2018-03-20 18:01:52
 # @Last Modified by:   yulidong
-# @Last Modified time: 2019-01-11 22:10:01
+# @Last Modified time: 2019-01-03 18:48:15
 
 import torch
 import numpy as np
@@ -323,13 +323,7 @@ class rsn_cluster(nn.Module):
         #                                          padding=1, stride=1, bias=False)
         # self.outrefine4= conv2D(in_channels=32, k_size=1, n_filters=1,
         #                                          padding=0, stride=1, bias=False)
-        self.depth_f1=conv2DGroupNormRelu(in_channels=1, k_size=3, n_filters=32,
-                                                 padding=1, stride=1, bias=False,group_dim=32)
-        self.depth_f2=conv2DGroupNormRelu(in_channels=32, k_size=3, n_filters=64,
-                                                 padding=1, stride=1, bias=False,group_dim=32)
-
-        self.depth_f3 = self._make_layer(block, 64, layers[0],stride=1)
-        self.inrefine1=conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=64,
+        self.inrefine1=conv2DGroupNormRelu(in_channels=129, k_size=3, n_filters=64,
                                                  padding=1, stride=1, bias=False,group_dim=32)
         self.inrefine2=conv2DGroupNormRelu(in_channels=64, k_size=3, n_filters=32,
                                                  padding=1, stride=1, bias=False,group_dim=32)
@@ -455,22 +449,17 @@ class rsn_cluster(nn.Module):
             depth=self.regress5(x)
             #depth=torch.where(depth>4*torch.mean(depth),torch.mean(depth),depth)
             initial_depth=depth+0
-
-            # depth=torch.where(depth>beta,beta*one,depth)
-            # depth=torch.where(depth<alpha,alpha*one,depth)
+            depth=torch.where(depth>beta,beta*one,depth)
+            depth=torch.where(depth<alpha,alpha*one,depth)
             #accurate_depth=initial_depth+0
-            depth_f=self.depth_f1(depth.detach())
-            depth_f=self.depth_f2(depth_f)
-            depth_f=self.depth_f3(depth_f)
-            
+            x_fuse=torch.cat([depth,x_share],1)
             #x_fuse=initial_depth+x_share
-            x=self.inrefine1(x_share.detach())
-            x_var=depth_f-x
+            x=self.inrefine1(x_fuse)
             #print(x.shape)
-            x=self.inrefine2(x_var)
+            x=self.inrefine2(x)
             x=self.inrefine3(x)
             x=self.inrefine4(x)
-            accurate_depth=self.inrefine5(x)+depth.detach()
+            accurate_depth=self.inrefine5(x)
             if task=='memory':
                 return accurate_depth,x_share
             #accurate_depth=self.output(initial_depth+variance)
@@ -547,7 +536,7 @@ class rsn_cluster(nn.Module):
             #accurate_depth=torch.where(accurate_depth>4*torch.mean(accurate_depth),torch.mean(accurate_depth),accurate_depth)
             #print(torch.mean(depth).item(),torch.mean(coarse_depth).item())
             #loss_var,loss_dis = cluster_loss_depth(y,segments.long(),device_id=cuda_id)
-            return initial_depth,accurate_depth,one,one,one
+            return initial_depth,initial_depth,one,one,one
         else:
             if task=='train':
                 with torch.no_grad():

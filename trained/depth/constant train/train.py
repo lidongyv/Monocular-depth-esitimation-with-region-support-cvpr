@@ -2,7 +2,7 @@
 # @Author: lidong
 # @Date:   2018-03-18 13:41:34
 # @Last Modified by:   yulidong
-# @Last Modified time: 2019-01-12 21:25:18
+# @Last Modified time: 2019-01-06 09:41:09
 import sys
 import torch
 import visdom
@@ -54,10 +54,10 @@ def train(args):
 
     # Setup visdom for visualization
     if args.visdom:
-        vis = visdom.Visdom(env='nyu_depth_feature_refine')
+        vis = visdom.Visdom(env='nyu_depth_')
 
 
-        depth_feature_refine_window = vis.image(
+        depth__window = vis.image(
             np.random.rand(228, 304),
             opts=dict(title='depth!', caption='depth.'),
         )
@@ -148,12 +148,12 @@ def train(args):
         best_error=100
         best_error_r=100
         trained=0
-        mean_loss=10.0
+        mean_loss=2.0
         print('random initialize')
         
         print("No checkpoint found at '{}'".format(args.resume))
         print('Initialize from rsn!')
-        rsn=torch.load('/home/lidong/Documents/RSCFN/depth_feature_refine_rsn_cluster_nyu_4_0.5681759_coarse_best_model.pkl',map_location='cpu')
+        rsn=torch.load('/home/lidong/Documents/RSCFN/depth__rsn_cluster_nyu_0_0.59483826_coarse_best_model.pkl',map_location='cpu')
         model_dict=model.state_dict()  
         #print(model_dict)          
         pre_dict={k: v for k, v in rsn['model_state'].items() if k in model_dict and rsn['model_state'].items()}
@@ -173,7 +173,7 @@ def train(args):
         #optimizer.load_state_dict(rsn['optimizer_state'])
         trained=rsn['epoch']
         best_error=rsn['error']+0.5
-        #mean_loss=best_error/2
+        mean_loss=best_error/2
         print('load success!')
         print(best_error)
         #best_error+=1
@@ -222,12 +222,7 @@ def train(args):
                 mask=(labels>alpha)&(labels<beta)
                 mask=mask.float().detach()
                 #print(torch.sum(mask))
-                accurate=torch.where(accurate>beta,beta*one,accurate)
-                accurate=torch.where(accurate<alpha,alpha*one,accurate)
-                labels=torch.where(labels>beta,beta*zero,labels)
-                labels=torch.where(labels<alpha,alpha*zero,labels)
-                depth=torch.where(depth>beta,beta*one,depth)
-                depth=torch.where(depth<alpha,alpha*one,depth)
+
                 # print('depth',torch.mean(depth).item(),torch.min(depth).item(),torch.max(depth).item())
                 # print('accurate',torch.mean(accurate).item(),torch.min(accurate).item(),torch.max(accurate).item())
                 # print('ground',torch.mean(labels).item(),torch.min(labels).item(),torch.max(labels).item())
@@ -235,11 +230,11 @@ def train(args):
                 #loss_d=relative_loss(depth,labels,mask)
                 #loss_i=berhu_log(intial,labels)
                 loss_a=berhu(accurate,labels,mask)
-                loss_v=v_loss(accurate,depth,labels,mask)
+                loss_v=berhu(accurate,depth,mask)
                 #print(depth.requires_grad)
-                print('mean_variance:%.4f,max_variance:%.4f'%((torch.sum(torch.abs(accurate-depth))/torch.sum(mask)).item(),torch.max(torch.abs(accurate-depth)).item()))
+                print('mean_variance:%.4f,max_variance:%.4f'%(torch.mean(torch.abs(accurate-depth)).item(),torch.max(torch.abs(accurate-depth)).item()))
                 #loss_a=relative_loss(accurate,labels,mask)
-                #loss_d=log_loss(depth,labels)=
+                #loss_d=log_loss(depth,labels)
                 # loss_a=log_loss(depth[mask],labels[mask])
                 # loss_d=log_loss(accurate[mask],labels[mask])
                 # if epoch<30:
@@ -248,9 +243,8 @@ def train(args):
                 #     loss=loss_a
                 #loss=0.3*loss_d+0.35*loss_a+0.35*loss_v
                 #loss=0.7*loss_a+0.4*loss_d-0.1*loss_v
-                #loss=loss_a+0.3*loss_d+0.1*(loss_a-loss_d)+0.5*loss_v
-                loss=0.7*loss_a+0.3*loss_d
-                #loss=loss_a
+                #loss=0.9*loss_a+0.1*loss_d
+                loss=loss_a
                 #mask=mask.float()
                 #mask=(labels>alpha)&(labels<beta)&(labels<torch.max(labels))&(labels>torch.min(labels))
                 #loss=loss+0.5*(torch.sum(loss_var)+torch.sum(loss_dis)+0.001*torch.sum(loss_reg))
@@ -262,7 +256,11 @@ def train(args):
                 #print(torch.min(accurate),torch.max(accurate))
                 #exit()
 
+                accurate=torch.where(accurate>beta,beta*one,accurate)
+                accurate=torch.where(accurate<alpha,alpha*one,accurate)
 
+                depth=torch.where(depth>beta,beta*one,depth)
+                depth=torch.where(depth<alpha,alpha*one,depth)
                 lin=torch.mean(torch.sqrt(torch.sum(torch.where(mask>0,torch.pow(accurate-labels,2),mask).view(labels.shape[0],-1),dim=-1)/(torch.sum(mask.view(labels.shape[0],-1),dim=-1)+1)))
                 lin_d=torch.mean(torch.sqrt(torch.sum(torch.where(mask>0,torch.pow(depth-labels,2),mask).view(labels.shape[0],-1),dim=-1)/(torch.sum(mask.view(labels.shape[0],-1),dim=-1)+1)))
                 lin=lin.detach()
@@ -275,37 +273,22 @@ def train(args):
                 #accurate=torch.where(accurate>torch.mean(accurate)*4,torch.mean(accurate)*4,accurate)
                 #depth=torch.where(depth>torch.mean(depth)*4,torch.mean(accurate)*4,depth)
                 #exit()
-                # loss.backward()
-                # mean_loss_ave.append(lin.item())
-                # optimizer.step()
-                # break
-                # if epoch==trained and i<1500:
 
-                #     loss.backward()
-                #     mean_loss_ave.append(lin.item())
-                #     optimizer.step()
-                #     break
                 if (lin<=mean_loss) :
                     #loss_bp=loss*torch.pow(100,-(mean_loss-lin)/mean_loss)
                     #loss_bp=loss*zero
                     print('no back')
-                    if lin<=0.75*mean_loss:
-                        loss_bp=0.1*loss
-                    else:
-                        loss_bp=loss
+                    loss=0.1*loss
                     #optimizer.step()
-                    loss_bp.backward()
+                    loss.backward()
                     mean_loss_ave.append(lin.item())
                     optimizer.step()
                     break
                 else:
-                    #print(torch.pow(10,torch.min(one,(lin-mean_loss)/mean_loss)).item())
+                    print(torch.pow(100,torch.min(one,(lin-mean_loss)/mean_loss)).item())
                     print('back')
-                    #loss=loss*torch.pow(10,torch.min(one,(lin-mean_loss)/mean_loss))
-                    if lin>1.5*mean_loss:
-                        loss_bp=10*loss
-                    else:
-                        loss_bp=loss
+                    loss_bp=loss*torch.pow(10,torch.min(one,(lin-mean_loss)/mean_loss))
+                    #mean_loss_ave.append(loss.item())
                     loss_bp.backward()
                     optimizer.step()
                     #break
@@ -322,12 +305,11 @@ def train(args):
                 # if i==0:
                 #     mean_loss=loss.item()
                 #or ((loss-mean_loss)/mean_loss<0.2)
-                if lin<=mean_loss or iterative_count>8 :
+                if lin<=+0.1+mean_loss or iterative_count>10 :
                     mean_loss_ave.append(lin.item())
                     # mean_loss=np.mean(mean_loss_ave)
                     break
                 else:
-                    #if lin<1.5*mean_loss:
                     iterative_count+=1
                     print("repeat data [%d/%d/%d/%d] Loss: %.4f lin: %.4f " % (i,train_len, epoch, args.n_epoch,loss.item(),lin.item()))
             #print(torch.mean(depth).item())
@@ -363,7 +345,7 @@ def train(args):
                     vis.image(
                         depth,
                         opts=dict(title='depth!', caption='depth.'),
-                        win=depth_feature_refine_window,
+                        win=depth__window,
                     )
                     accurate = accurate.data.cpu().numpy().astype('float32')
                     accurate = accurate[0,...]
@@ -388,7 +370,7 @@ def train(args):
 
             loss_error_d+=log_d.item()
             print("data [%d/%d/%d/%d] Loss: %.4f lin: %.4f lin_d:%.4f loss_d:%.4f loss_a:%.4f loss_var:%.4f loss_dis:%.4f loss_reg: %.4f" % (i,train_len, epoch, args.n_epoch,loss.item(),lin.item(),lin_d.item(), loss_d.item(),loss_a.item(), \
-                torch.sum(loss_v).item(),torch.sum((loss_a-loss_d)).item(),0.001*torch.sum(loss_reg).item()))
+                torch.sum(loss_v).item(),torch.sum(loss_dis).item(),0.001*torch.sum(loss_reg).item()))
 
             
             
@@ -418,8 +400,7 @@ def train(args):
                         # loss=loss+loss_d
                         accurate=torch.where(accurate>beta,beta*one,accurate)
                         accurate=torch.where(accurate<alpha,alpha*one,accurate)
-                        labels_val=torch.where(labels_val>beta,beta*zero,labels_val)
-                        labels_val=torch.where(labels_val<alpha,alpha*zero,labels_val)
+
                         depth=torch.where(depth>beta,beta*one,depth)
                         depth=torch.where(depth<alpha,alpha*one,depth)
                         depth=F.interpolate(depth,scale_factor=scale,mode='nearest').squeeze()
@@ -496,7 +477,7 @@ def train(args):
                         vis.image(
                             depth,
                             opts=dict(title='depth!', caption='depth.'),
-                            win=depth_feature_refine_window,
+                            win=depth__window,
                         )
 
                         accurate = accurate.data.cpu().numpy().astype('float32')
@@ -536,7 +517,7 @@ def train(args):
                              'error': error,
                              'mean_loss':mean_loss,
                              }
-                    torch.save(state, "depth_feature_refine_{}_{}_{}_{}_coarse_best_model.pkl".format(
+                    torch.save(state, "depth__{}_{}_{}_{}_coarse_best_model.pkl".format(
                         args.arch, args.dataset,str(epoch),str(error)))
                     print('save success')
                 np.save('/home/lidong/Documents/RSCFN/loss.npy',loss_rec)
@@ -584,8 +565,7 @@ def train(args):
                     # loss=loss+loss_d
                     accurate=torch.where(accurate>beta,beta*one,accurate)
                     accurate=torch.where(accurate<alpha,alpha*one,accurate)
-                    labels_val=torch.where(labels_val>beta,beta*zero,labels_val)
-                    labels_val=torch.where(labels_val<alpha,alpha*zero,labels_val)
+
                     depth=torch.where(depth>beta,beta*one,depth)
                     depth=torch.where(depth<alpha,alpha*one,depth)
                     depth=F.interpolate(depth,scale_factor=scale,mode='nearest').squeeze()
@@ -662,7 +642,7 @@ def train(args):
                     vis.image(
                         depth,
                         opts=dict(title='depth!', caption='depth.'),
-                        win=depth_feature_refine_window,
+                        win=depth__window,
                     )
 
                     accurate = accurate.data.cpu().numpy().astype('float32')
@@ -701,7 +681,7 @@ def train(args):
                          'error': error,
                          'mean_loss':mean_loss,
                          }
-                torch.save(state, "depth_feature_refine_{}_{}_{}_{}_coarse_best_model.pkl".format(
+                torch.save(state, "depth__{}_{}_{}_{}_coarse_best_model.pkl".format(
                     args.arch, args.dataset,str(epoch),str(error)))
                 print('save success')
             np.save('/home/lidong/Documents/RSCFN/loss.npy',loss_rec)
@@ -714,7 +694,7 @@ def train(args):
                      'optimizer_state': optimizer.state_dict(), 
                      'error': error,
                      'mean_loss':mean_loss,}
-            torch.save(state, "depth_feature_refine_{}_{}_{}_ceoarse_model.pkl".format(
+            torch.save(state, "depth__{}_{}_{}_ceoarse_model.pkl".format(
                 args.arch, args.dataset,str(epoch)))
             print('save success')
 
@@ -739,8 +719,8 @@ if __name__ == '__main__':
                         help='Learning Rate')
     parser.add_argument('--feature_scale', nargs='?', type=int, default=1,
                         help='Divider for # of features to use')
-    parser.add_argument('--resume', nargs='?', type=str, default='/home/lidong/Documents/RSCFN/depth_feature_refine_rsn_cluster_nyu_43_0.54488176_coarse_best_model.pkl',
-                        help='Path to previous saved model to restart from /home/lidong/Documents/RSCFN/depth_feature_refine_rsn_cluster_nyu_4_0.60618377_coarse_best_model.pkl')
+    parser.add_argument('--resume', nargs='?', type=str, default='/home/lidong/Documents/RSCFN/depth__rsn_cluster_nyu_73_0.54769194_coarse_best_model.pkl',
+                        help='Path to previous saved model to restart from /home/lidong/Documents/RSCFN/depth__rsn_cluster_nyu_27_ceoarse_model.pkl')
     parser.add_argument('--visdom', nargs='?', type=bool, default=False,
                         help='Show visualization(s) on visdom | False by  default')
     args = parser.parse_args()
