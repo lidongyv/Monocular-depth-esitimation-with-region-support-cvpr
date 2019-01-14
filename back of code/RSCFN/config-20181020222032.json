@@ -1,0 +1,23 @@
+{
+  "sceneflow":
+  {
+    "data_path": "/home/lidong/Documents/SceneFlow/driving"
+  },
+
+  "nyu1":
+  {
+    "data_path": "/home/lidong/Documents/datasets/nyu/"
+  },
+  "nyu2":
+  {
+    "data_path": "/home/lidong/Documents/datasets/nyu/nyu2/"
+  } ,
+    "nyu":
+  {
+    "data_path": "/home/lidong/Documents/datasets/nyu/"
+  } ,
+    "kitti":
+  {
+    "data_path": "/home/lidong/Documents/datasets/single_driver/"
+  }   
+}
