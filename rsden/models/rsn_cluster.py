@@ -2,7 +2,7 @@
 # @Author: lidong
 # @Date:   2018-03-20 18:01:52
 # @Last Modified by:   yulidong
-# @Last Modified time: 2019-01-11 22:10:01
+# @Last Modified time: 2019-01-30 16:36:39
 
 import torch
 import numpy as np
@@ -18,13 +18,98 @@ cuda_id=2
 group_dim=32
 alpha=0.7132995128631592
 beta=9.99547004699707
+class similarity_measure1(nn.Module):
+    def __init__(self):
+        super(similarity_measure1, self).__init__()
+        self.inplanes = 32
+        self.conv0 = nn.Conv2d(66, 32, kernel_size=1, stride=1, padding=0,
+                               bias=False,dilation=1)
+        self.relu0 = nn.LeakyReLU(inplace=True)        
+        self.conv1 = nn.Conv2d(32, 16, kernel_size=1, stride=1, padding=0,
+                               bias=False,dilation=1)        
+        self.relu1 = nn.LeakyReLU(inplace=True)
+        self.conv2 = nn.Conv2d(16, 8, kernel_size=1, stride=1, padding=0,
+                               bias=False,dilation=1)
+        self.relu2 = nn.LeakyReLU(inplace=True)
+        self.conv3 = nn.Conv2d(8, 1, kernel_size=1, stride=1, padding=0,
+                               bias=False,dilation=1)
+        self.relu3 = nn.LeakyReLU(inplace=True)
+        # self.conv4 = nn.Conv2d(16, 8, kernel_size=1, stride=1, padding=0,
+        #                        bias=False,dilation=1)
+        # self.relu4 = nn.LeakyReLU(inplace=True)
+        # self.conv5 = nn.Conv2d(8, 1, kernel_size=1, stride=1, padding=0,
+        #                        bias=False,dilation=1)
+        # self.relu5 = nn.ReLU(inplace=True)
+        #self.s1=nn.Parameter(torch.ones(1)).float()*0.5
+
+        for m in self.modules():
+          if isinstance(m,nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight,mode='fan_out',nonlinearity='relu')
+          elif isinstance(m, nn.GroupNorm):
+            nn.init.constant_(m.weight,1)
+            nn.init.constant_(m.bias,0)
+    def forward(self, x):
+
+        output = self.conv0(x)
+        output = self.relu0(output)
+        output = self.conv1(output)
+        output = self.relu1(output)
+        output = self.conv2(output)
+        output = self.relu2(output)
+        output = self.conv3(output)
+        output = self.relu3(output)
+        # output = self.conv4(output)
+        # output = self.relu4(output)
+        # output = self.conv5(output)
+        # #output = torch.abs(output)
+        # output = self.relu5(output)
+
+        # print(output.shape)
+        # print(torch.mean(output).item(),torch.max(output).item(),torch.min(output).item())
+
+        # output = output/torch.max(output)
+        # output = output-torch.min(output)
+        # output = 1-output
+        # output = torch.exp(-output)
+        #print(torch.mean(output).item(),torch.max(output).item(),torch.min(output).item())
+        return output
+class similarity_measure2(nn.Module):
+    def __init__(self):
+        super(similarity_measure2, self).__init__()
+        self.inplanes = 32
+        self.conv0 = nn.Conv2d(3, 3, kernel_size=1, stride=1, padding=0,
+                               bias=False,dilation=1)
+        self.relu0 = nn.LeakyReLU(inplace=True)        
+        self.conv1 = nn.Conv2d(3, 2, kernel_size=1, stride=1, padding=0,
+                               bias=False,dilation=1)        
+        self.relu1 = nn.LeakyReLU(inplace=True)
+        self.conv2 = nn.Conv2d(2, 1, kernel_size=1, stride=1, padding=0,
+                               bias=False,dilation=1)
+        self.relu2 = nn.LeakyReLU(inplace=True)        
+        #self.s2=nn.Parameter(torch.ones(1)).float()*0.5
+
+        for m in self.modules():
+          if isinstance(m,nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight,mode='fan_out',nonlinearity='relu')
+          elif isinstance(m, nn.GroupNorm):
+            nn.init.constant_(m.weight,1)
+            nn.init.constant_(m.bias,0)
+    def forward(self, x):
+
+        output = self.conv0(x)
+        output = self.relu0(output)
+        output = self.conv1(output)
+        output = self.relu1(output)
+        output = self.conv2(output)
+        output = self.relu2(output)
+        return output
 def mean_shift(feature,mean,bandwidth):
     #feature shape c h w
     for t in range(10):
         #print(t)
         dis=feature-mean
         dis=torch.norm(dis,dim=0)
-        mask=torch.where(dis<bandwidth,torch.tensor(1).cuda(),torch.tensor(0).cuda()).float()
+        mask=torch.where(dis<bandwidth,torch.tensor(1).cuda(feature.device),torch.tensor(0).cuda(feature.device)).float()
         mean=torch.sum((feature*mask).view(feature.shape[0],feature.shape[1]*feature.shape[2]),dim=1)/torch.sum(mask)
         mean=mean.view([feature.shape[0],1,1])
     return mean
@@ -32,7 +117,7 @@ def get_mask(feature,mean,bandwidth):
     mean=mean.view([mean.shape[0],1,1])
     dis=feature-mean
     dis=torch.norm(dis,dim=0)
-    mask=torch.where(dis<bandwidth,torch.tensor(1).cuda(),torch.tensor(0).cuda())
+    mask=torch.where(dis<bandwidth,torch.tensor(1).cuda(feature.device),torch.tensor(0).cuda(feature.device))
     #pixels=mask.nonzero()
     return mask.float()
 
@@ -40,11 +125,11 @@ def get_mask(feature,mean,bandwidth):
 def re_label(mask,area,bandwidth):
     index=torch.sum(area)
     print(index)
-    count=torch.tensor(0).float().cuda()
+    count=torch.tensor(0).float().cuda(mask.device)
     for i in range(area.shape[0]):
         mask[i,:,:]=torch.where(mask[i,:,:]>0,mask[i,:,:]+count,mask[i,:,:])
         count+=area[i]
-    segment=torch.where(mask>0,torch.tensor(1).cuda(),torch.tensor(0).cuda()).float()
+    segment=torch.where(mask>0,torch.tensor(1).cuda(mask.device),torch.tensor(0).cuda(mask.device)).float()
     final=torch.sum(mask,dim=0)/torch.sum(segment,dim=0)
     final=torch.squeeze(final)
     final=final/255
@@ -63,26 +148,26 @@ def refine_mask(mask):
                 mask[minx+80*(i-1):minx+80*i,miny+80*(j-1):miny+80*j]*=i*j
     areas=torch.unique(mask).sort()[0]
     for i in range(1,len(areas)):
-        mask=torch.where(mask==areas[i],-torch.ones(1).float().cuda()*i,mask)
+        mask=torch.where(mask==areas[i],-torch.ones(1).float().cuda(mask.device)*i,mask)
     mask=-mask
     return mask.float()
 def fuse_mask(n_mask,r_mask):
-    base=torch.where(n_mask>0,torch.tensor(1).cuda(),torch.tensor(0).cuda()).float()
+    base=torch.where(n_mask>0,torch.tensor(1).cuda(n_mask.device),torch.tensor(0).cuda(n_mask.device)).float()
     areas=torch.max(n_mask)
     #for i in range(1,torch.max(r_mask).long()+1):
     i=1
-    shift=torch.where(r_mask==i,torch.tensor(1).cuda(),torch.tensor(0).cuda()).float()
-    non_overlap=torch.where(base-shift==-1,torch.tensor(1).cuda(),torch.tensor(0).cuda()).float()
+    shift=torch.where(r_mask>0,torch.tensor(1).cuda(n_mask.device),torch.tensor(0).cuda(n_mask.device)).float()
+    non_overlap=torch.where(base-shift==-1,torch.tensor(1).cuda(n_mask.device),torch.tensor(0).cuda(n_mask.device)).float()
     overlap=shift-non_overlap
-    if torch.sum(non_overlap)/torch.sum(shift)>0.4:
+    if torch.sum(non_overlap)/torch.sum(shift)>0.8 and torch.sum(non_overlap)>100:
         areas+=1
         n_mask=torch.where(non_overlap==1,areas,n_mask)
-        base=torch.where(n_mask>0,torch.tensor(1).cuda(),torch.tensor(0).cuda()).float()
+        #base=torch.where(n_mask>0,torch.tensor(1).cuda(n_mask.device),torch.tensor(0).cuda(n_mask.device)).float()
         #print(areas)
     else:
-        area_num=torch.argmax(torch.bincount(torch.where(overlap.long()==1,n_mask.long(),torch.tensor(0).cuda()).view(-1))[1:]).float()+1
+        area_num=torch.argmax(torch.bincount(torch.where(overlap.long()==1,n_mask.long(),torch.tensor(0).cuda(n_mask.device)).view(-1))[1:]).float()+1
         n_mask=torch.where(non_overlap==1,area_num,n_mask)
-        base=torch.where(n_mask>0,torch.tensor(1).cuda(),torch.tensor(0).cuda()).float()
+        #base=torch.where(n_mask>0,torch.tensor(1).cuda(n_mask.device),torch.tensor(0).cuda(n_mask.device)).float()
             #print(areas)
 #     areas_nums=torch.tensor(1).float().cuda()
 #     for i in range(1,torch.max(n_mask).long()+1):
@@ -114,34 +199,37 @@ def fast_cluster(feature,bandwidth=0.16):
     for i in range(feature.shape[0]):
         n_mask=0
         n_feature=feature[i,...]
-        label=torch.zeros(n_feature.shape[1],n_feature.shape[2]).cuda().float()
+        label=torch.zeros(n_feature.shape[1],n_feature.shape[2]).cuda(feature.device).float()
         check=0
         count=0
         while(torch.min(label)==0):
-            candidate=torch.where(label==0,torch.tensor(1).float().cuda(),torch.tensor(0).float().cuda()).nonzero()
+            candidate=torch.where(label==0,torch.tensor(1).float().cuda(feature.device),torch.tensor(0).float().cuda(feature.device)).nonzero()
             #print(len(candidate))
             seed=torch.randint(len(candidate),(1,))[0].long()
             mean=n_feature[:,candidate[seed][0].long(),candidate[seed][1].long()].view(n_feature.shape[0],1,1)
             mean=mean_shift(n_feature, mean, bandwidth)
             t_masks=get_mask(n_feature, mean, bandwidth)
-            #print(len(candidate),n_mask)
-            label=label+t_masks
-            if n_mask==0:
-                #r_masks=refine_mask(t_masks)
-                n_masks=t_masks
-                n_mask=torch.max(n_masks)
-                
-            else:
-                #r_masks=refine_mask(t_masks)
-                n_masks=fuse_mask(n_masks,t_masks)
-                n_mask=torch.max(n_masks)
+
+            if torch.sum(t_masks)>100:
+
+                #print(len(candidate),n_mask)
+                label=label+t_masks
+                if n_mask==0:
+                    #r_masks=refine_mask(t_masks)
+                    n_masks=t_masks
+                    n_mask=torch.max(n_masks)
+                    
+                else:
+                    #r_masks=refine_mask(t_masks)
+                    n_masks=fuse_mask(n_masks,t_masks)
+                    n_mask=torch.max(n_masks)
             #print(torch.max(n_masks))
-            candidate=torch.where(label==0,torch.tensor(1).float().cuda(),torch.tensor(0).float().cuda()).nonzero()
+            candidate=torch.where(label==0,torch.tensor(1).float().cuda(feature.device),torch.tensor(0).float().cuda(feature.device)).nonzero()
             if len(candidate)==check:
                 count+=1
             else:
                 check=len(candidate)
-            if count>10:
+            if count>20 and n_mask>0:
                 break
             # if count>3:
             #     bandwidth=bandwidth*1.1
@@ -305,15 +393,15 @@ class rsn_cluster(nn.Module):
                                          padding=0, stride=1, bias=False)
         self.regress5 = conv2DRelu(in_channels=16, k_size=1, n_filters=1,
                                          padding=0, stride=1, bias=False)       
-        self.class0= conv2DGroupNormRelu(in_channels=64, k_size=1, n_filters=64,
+        self.class0= conv2DGroupNormRelu(in_channels=131, k_size=1, n_filters=128,
                                                  padding=0, stride=1, bias=False,group_dim=group_dim)
-        self.class1= conv2DGroupNormRelu(in_channels=64, k_size=3, n_filters=64,
+        self.class1= conv2DGroupNormRelu(in_channels=128, k_size=3, n_filters=64,
                                                  padding=1, stride=1, bias=False,group_dim=group_dim)
-        self.class2= conv2DRelu(in_channels=64, k_size=3, n_filters=64,
+        self.class2= conv2DRelu(in_channels=64, k_size=3, n_filters=32,
                                                  padding=1, stride=1, bias=False)
-        self.class3= conv2DRelu(in_channels=64, k_size=3, n_filters=32,
+        self.class3= conv2DRelu(in_channels=32, k_size=3, n_filters=16,
                                                  padding=1, stride=1, bias=False)        
-        self.class4= conv2D(in_channels=32, k_size=1, n_filters=16,
+        self.class4= conv2D(in_channels=16, k_size=1, n_filters=16,
                                                  padding=0, stride=1, bias=False)
         # self.outrefine1=conv2DGroupNormRelu(in_channels=514, k_size=1, n_filters=128,
         #                                          padding=0, stride=1, bias=False,group_dim=group_dim)
@@ -428,22 +516,11 @@ class rsn_cluster(nn.Module):
         #accurate_depth=depth*reliable
         
         if flag==0:
-            #x_fuse=torch.cat([x_share,location_map],1)
+            
             x_fuse=x_share
-            # y=self.class0(x_fuse)
-            # y=self.class1(y)
-            # y=self.class2(y)
-            # y=self.class3(y)
-            # y=self.class4(y)
-            # with torch.no_grad():
-            #     #masks=fast_cluster(y).view(1,1,x_share.shape[-2],x_share.shape[-1])
-            #     masks=segments.view(1,1,x_share.shape[-2],x_share.shape[-1])
-                # mask_volume=torch.zeros(1,80,x_share.shape[-2],x_share.shape[-1]).cuda()
-                # for i in range(1,torch.max(masks).int()+1):
-                #     mask_volume[:,i-1,:,:]=torch.where(masks==i,one,zero).view_as(mask_volume[:,i-1,:,:])
-            #x=self.regress1(x_share)
-            #x=self.regress1(torch.cat([x_fuse,masks/torch.max(masks)],1))
-            #x=self.regress1(torch.cat([x_fuse,mask_volume],1))
+
+
+
             x=self.regress1(x_fuse)
             #x=self.drop1(x)
             #print(x.shape)
@@ -455,7 +532,41 @@ class rsn_cluster(nn.Module):
             depth=self.regress5(x)
             #depth=torch.where(depth>4*torch.mean(depth),torch.mean(depth),depth)
             initial_depth=depth+0
+            x_fuse=torch.cat([x_share,location_map],1)
+            y=self.class0(x_fuse)
+            y=self.class1(y)
+            y=self.class2(y)
+            y=self.class3(y)
+            y=self.class4(y)
 
+
+
+
+            # with torch.no_grad():
+            #     #masks=fast_cluster(y).view_as(depth)
+            #     #masks=segments.view_as(depth)
+            #     #coarse depth
+            #     coarse_depth=depth+0
+            #     coarse_feature=x_fuse+0
+            #     mean_features=torch.zeros(1,x_fuse.shape[1],torch.max(masks).long()+1).cuda()
+            #     mean_depth=torch.zeros(torch.max(masks).long()+1).cuda()
+            #     #print(torch.max(masks))f
+            #     for i in range(1,torch.max(masks).int()+1):
+            #         index_r=torch.where(masks==i,one,zero)
+            #         mean_d=torch.sum(index_r*depth)/torch.sum(index_r)
+            #         mean_depth[i]=mean_d
+            #         coarse_depth=torch.where(masks==i,mean_d,coarse_depth)
+            #         mean_f=torch.sum((index_r*x_fuse).view(x_fuse.shape[0],x_fuse.shape[1],-1),dim=-1)/torch.sum(index_r)
+            #         #print(mean_f.shape,mean_features[...,i].shape)
+            #         mean_features[...,i]=mean_f
+            #         coarse_feature=torch.where(masks==i,mean_f.view(x_fuse.shape[0],x_fuse.shape[1],1,1),coarse_feature)
+
+            # with torch.no_grad():
+            #     #masks=fast_cluster(y).view(1,1,x_share.shape[-2],x_share.shape[-1])
+            #     masks=segments.view(1,1,x_share.shape[-2],x_share.shape[-1])
+            #     mask_volume=torch.zeros(1,80,x_share.shape[-2],x_share.shape[-1]).cuda()
+            #     for i in range(1,torch.max(masks).int()+1):
+            #         mask_volume[:,i-1,:,:]=torch.where(masks==i,one,zero).view_as(mask_volume[:,i-1,:,:])
             # depth=torch.where(depth>beta,beta*one,depth)
             # depth=torch.where(depth<alpha,alpha*one,depth)
             #accurate_depth=initial_depth+0
@@ -471,6 +582,11 @@ class rsn_cluster(nn.Module):
             x=self.inrefine3(x)
             x=self.inrefine4(x)
             accurate_depth=self.inrefine5(x)+depth.detach()
+            with torch.no_grad():
+                masks=fast_cluster(y).view_as(depth)
+            loss_var,loss_dis,loss_re = cluster_loss_depth(y,masks.long(),labels,device_id=y.device)
+
+            #loss_var,loss_dis,loss_re = cluster_loss(y,segments.long(),device_id=cuda_id)
             if task=='memory':
                 return accurate_depth,x_share
             #accurate_depth=self.output(initial_depth+variance)
@@ -478,24 +594,8 @@ class rsn_cluster(nn.Module):
             # initial_depth=torch.where(initial_depth<alpha,alpha*one,initial_depth)
             # accurate_depth=torch.where(accurate_depth>beta,beta*one,accurate_depth)
             # accurate_depth=torch.where(accurate_depth<alpha,alpha*one,accurate_depth)
-            # with torch.no_grad():
-            #     #masks=fast_cluster(y).view_as(depth)
-            #     #masks=segments.view_as(depth)
-            #     #coarse depth
-            #     coarse_depth=depth+0
-            #     coarse_feature=x_fuse+0
-            #     mean_features=torch.zeros(1,x_fuse.shape[1],torch.max(masks).long()+1).cuda()
-            #     mean_depth=torch.zeros(torch.max(masks).long()+1).cuda()
-            #     #print(torch.max(masks))
-            #     for i in range(1,torch.max(masks).int()+1):
-            #         index_r=torch.where(masks==i,one,zero)
-            #         mean_d=torch.sum(index_r*depth)/torch.sum(index_r)
-            #         mean_depth[i]=mean_d
-            #         coarse_depth=torch.where(masks==i,mean_d,coarse_depth)
-            #         mean_f=torch.sum((index_r*x_fuse).view(x_fuse.shape[0],x_fuse.shape[1],-1),dim=-1)/torch.sum(index_r)
-            #         #print(mean_f.shape,mean_features[...,i].shape)
-            #         mean_features[...,i]=mean_f
-            #         coarse_feature=torch.where(masks==i,mean_f.view(x_fuse.shape[0],x_fuse.shape[1],1,1),coarse_feature)
+
+
 
             # #     #refine outer
             # #     outer_feature=torch.zeros(1,2*x_share.shape[1]+2,torch.max(masks).long()+1,torch.max(masks).long()+1).cuda()
@@ -547,7 +647,7 @@ class rsn_cluster(nn.Module):
             #accurate_depth=torch.where(accurate_depth>4*torch.mean(accurate_depth),torch.mean(accurate_depth),accurate_depth)
             #print(torch.mean(depth).item(),torch.mean(coarse_depth).item())
             #loss_var,loss_dis = cluster_loss_depth(y,segments.long(),device_id=cuda_id)
-            return initial_depth,accurate_depth,one,one,one
+            return initial_depth,accurate_depth,loss_var,loss_dis,loss_re,masks
         else:
             if task=='train':
                 with torch.no_grad():

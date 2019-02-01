@@ -2,7 +2,7 @@
 # @Author: yulidong
 # @Date:   2018-04-25 23:06:40
 # @Last Modified by:   yulidong
-# @Last Modified time: 2019-01-12 21:24:31
+# @Last Modified time: 2019-01-29 16:18:19
 
 
 import os
@@ -225,11 +225,11 @@ class NYU(data.Dataset):
                 mask=tf.hflip(mask)
                 segments=tf.hflip(segments)
                 region=tf.hflip(region)
-            brightness=random.uniform(0, 0.2)
-            contrast=random.uniform(0, 0.2)
-            saturation=random.uniform(0, 0.2)
-            hue=random.uniform(0, 0.2)
-            color=transforms.ColorJitter(brightness,contrast,saturation,hue)
+            # brightness=random.uniform(0, 0.4)
+            # contrast=random.uniform(0, 0.4)
+            # saturation=random.uniform(0, 0.4)
+            # hue=random.uniform(0, 0.2)
+            color=transforms.ColorJitter(0.4,0.4,0.4,0.4)
             img=color(img)
             gamma=random.uniform(0.7, 1.5)
             img=tf.adjust_gamma(img,gamma)
@@ -262,7 +262,8 @@ class NYU(data.Dataset):
             #exit()
 
         else:
-            one=torch.ones(1)
+            one=torch.ones(1).float()
+            zero=torch.zeros(1).float()
             mask=(depth>alpha)&(depth<beta)
             mask=mask.float()
             img=img.unsqueeze(0)

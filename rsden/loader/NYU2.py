@@ -2,7 +2,7 @@
 # @Author: yulidong
 # @Date:   2018-04-25 23:06:40
 # @Last Modified by:   yulidong
-# @Last Modified time: 2019-01-01 15:49:56
+# @Last Modified time: 2019-01-29 16:18:06
 
 
 import os
@@ -55,7 +55,12 @@ class NYU2(data.Dataset):
         if self.split=='test':
             self.path=os.path.join('/home/dataset2/nyu/nyu2/test/')
             self.files=os.listdir(self.path)
-            #self.files.sort(key=lambda x:int(x[:-4]))
+            self.all_data=os.listdir('/home/dataset2/nyu/nyu2/test/')
+            self.all_data.sort(key=lambda x:int(x[:-4]))
+            if index_bank==None:
+                self.files=np.arange(0,len(self.all_data))
+            else:
+                self.files=index_bank
             if len(self.files)<1:
                 raise Exception("No files for %s found in %s" % (split, self.path))
 
@@ -75,8 +80,8 @@ class NYU2(data.Dataset):
             self.r=5 
         if task=='region':
             self.d=3
-            self.r=3
-            self.m=3
+            self.r=7
+            self.m=7
         self.length=self.__len__()
     def __len__(self):
         """__len__"""
@@ -128,8 +133,9 @@ class NYU2(data.Dataset):
 
         if self.is_transform:
             img, depth,region,segments,image = self.transform(img, depth,region,segments)
-
-        return img, depth,region,segments,image,index
+        #print(torch.max(region))
+        #exit()
+        return img, depth,region,segments,image
 
     def transform(self, img, depth,region,segments):
         """transform
@@ -226,11 +232,11 @@ class NYU2(data.Dataset):
                 mask=tf.hflip(mask)
                 segments=tf.hflip(segments)
                 region=tf.hflip(region)
-            brightness=random.uniform(0, 0.2)
-            contrast=random.uniform(0, 0.2)
-            saturation=random.uniform(0, 0.2)
-            hue=random.uniform(0, 0.2)
-            color=transforms.ColorJitter(brightness,contrast,saturation,hue)
+            # brightness=random.uniform(0, 0.4)
+            # contrast=random.uniform(0, 0.4)
+            # saturation=random.uniform(0, 0.4)
+            # hue=random.uniform(0, 0.2)
+            color=transforms.ColorJitter(0.4,0.4,0.4,0.4)
             img=color(img)
             gamma=random.uniform(0.7, 1.5)
             img=tf.adjust_gamma(img,gamma)
@@ -277,11 +283,13 @@ class NYU2(data.Dataset):
             depth=torch.where(depth>beta,beta*one,depth)
             depth=torch.where(depth<alpha,alpha*one,depth)
             #depth=depth.squeeze()
-            region=F.interpolate(region,scale_factor=1/2,mode='bilinear',align_corners=False).squeeze()
+            region=F.interpolate(region,scale_factor=1/2,mode='nearest').squeeze()
 
-            segments=F.interpolate(segments,scale_factor=1/2,mode='bilinear',align_corners=False).squeeze()
+            segments=F.interpolate(segments,scale_factor=1/2,mode='nearest').squeeze()
             image=img[...,6:-6,8:-8]+0
             img=normalize(img)[...,6:-6,8:-8]
+            segments=segments[...,6:-6,8:-8]+0
+            region=region[...,6:-6,8:-8]+0
         #exit()
         # img=img.squeeze()
         # #print(depth.shape)

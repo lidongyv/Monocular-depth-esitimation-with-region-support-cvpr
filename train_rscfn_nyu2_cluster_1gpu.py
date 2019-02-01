@@ -2,7 +2,7 @@
 # @Author: lidong
 # @Date:   2018-03-18 13:41:34
 # @Last Modified by:   yulidong
-# @Last Modified time: 2019-01-12 21:25:18
+# @Last Modified time: 2019-01-29 15:00:05
 import sys
 import torch
 import visdom
@@ -97,9 +97,9 @@ def train(args):
     # model = torch.nn.DataParallel(
     #     model, device_ids=range(torch.cuda.device_count()))
     model = torch.nn.DataParallel(
-        model, device_ids=[0])
+        model, device_ids=[2])
     #model = torch.nn.DataParallel(model, device_ids=range(torch.cuda.device_count()))
-    model.cuda()
+    model.cuda(2)
 
     # Check if model has custom optimizer / loss
     # modify to adam, modify the learning rate
@@ -153,7 +153,7 @@ def train(args):
         
         print("No checkpoint found at '{}'".format(args.resume))
         print('Initialize from rsn!')
-        rsn=torch.load('/home/lidong/Documents/RSCFN/depth_feature_refine_rsn_cluster_nyu_4_0.5681759_coarse_best_model.pkl',map_location='cpu')
+        rsn=torch.load('/home/lidong/Documents/RSCFN/depth_feature_refine_rsn_cluster_nyu_47_0.53374344_coarse_best_model.pkl',map_location='cpu')
         model_dict=model.state_dict()  
         #print(model_dict)          
         pre_dict={k: v for k, v in rsn['model_state'].items() if k in model_dict and rsn['model_state'].items()}
@@ -185,8 +185,8 @@ def train(args):
         # loss_rec=loss_rec[:train_len*trained]
         #exit()
         
-    zero=torch.zeros(1).cuda()
-    one=torch.ones(1).cuda()
+    zero=torch.zeros(1).cuda(2)
+    one=torch.ones(1).cuda(2)
     # it should be range(checkpoint[''epoch],args.n_epoch)
     for epoch in range(trained, args.n_epoch):
     #for epoch in range(0, args.n_epoch):
@@ -202,25 +202,28 @@ def train(args):
             # if i==100:
             #     break
             
-            images = Variable(images.cuda(0))
-            labels = Variable(labels.cuda(0))
-            segments = Variable(segments.cuda(0))
-            regions = Variable(regions.cuda(0))
+            images = Variable(images.cuda(2))
+            labels = Variable(labels.cuda(2))
+            #segments = Variable(segments.cuda(2))
+            regions = Variable(regions.cuda(2))
 
             iterative_count=0
             while(True):
                 #mask = (labels > 0)
                 optimizer.zero_grad()
-
-                depth,accurate,loss_var,loss_dis,loss_reg = model(images,regions,labels,0,'train')
-                #depth,loss_var,loss_dis,loss_reg = model(images,segments)
-                #depth,masks,loss_var,loss_dis,loss_reg = model(images,segments,1,'train')
+                mask=(labels>alpha)&(labels<beta)
+                mask=mask.float().detach()
+                if torch.sum(mask)<1000:
+                    
+                    break
+                depth,accurate,loss_var,loss_dis,loss_re,segments = model(images,regions,labels,0,'train')
+                #depth,loss_var,loss_dis,segments = model(images,segments)
+                #depth,masks,loss_var,loss_dis,segments = model(images,segments,1,'train')
                 # depth,accurate = model(images,regions,0,'eval')
                 labels=labels.view_as(depth)
                 segments=segments.view_as(depth)
                 regions=regions.view_as(depth)
-                mask=(labels>alpha)&(labels<beta)
-                mask=mask.float().detach()
+
                 #print(torch.sum(mask))
                 accurate=torch.where(accurate>beta,beta*one,accurate)
                 accurate=torch.where(accurate<alpha,alpha*one,accurate)
@@ -237,7 +240,8 @@ def train(args):
                 loss_a=berhu(accurate,labels,mask)
                 loss_v=v_loss(accurate,depth,labels,mask)
                 #print(depth.requires_grad)
-                print('mean_variance:%.4f,max_variance:%.4f'%((torch.sum(torch.abs(accurate-depth))/torch.sum(mask)).item(),torch.max(torch.abs(accurate-depth)).item()))
+                #print('mean_variance:%.4f,max_variance:%.4f'%((torch.sum(torch.abs(accurate-depth))/torch.sum(mask)).item(),torch.max(torch.abs(accurate-depth)).item()))
+                print('masks_num:%d'%torch.max(segments))
                 #loss_a=relative_loss(accurate,labels,mask)
                 #loss_d=log_loss(depth,labels)=
                 # loss_a=log_loss(depth[mask],labels[mask])
@@ -249,11 +253,15 @@ def train(args):
                 #loss=0.3*loss_d+0.35*loss_a+0.35*loss_v
                 #loss=0.7*loss_a+0.4*loss_d-0.1*loss_v
                 #loss=loss_a+0.3*loss_d+0.1*(loss_a-loss_d)+0.5*loss_v
-                loss=0.7*loss_a+0.3*loss_d
+                #print(loss_re)
+                if epoch==trained and i<=6000:
+                    loss=0.7*loss_a+0.3*loss_d+0.5*loss_var+0.5*loss_dis+0.5*loss_re
+                else:
+                    loss=0.7*loss_a+0.3*loss_d+0.5*loss_var+0.5*loss_dis+0.5*loss_re
                 #loss=loss_a
                 #mask=mask.float()
                 #mask=(labels>alpha)&(labels<beta)&(labels<torch.max(labels))&(labels>torch.min(labels))
-                #loss=loss+0.5*(torch.sum(loss_var)+torch.sum(loss_dis)+0.001*torch.sum(loss_reg))
+                #loss=loss+0.5*(torch.sum(loss_var)+torch.sum(loss_dis)+0.001*torch.sum(segments))
                 #loss=loss/4+loss_d
                 #loss/=feature.shape[0]
                 # depth = model(images,segments)
@@ -276,6 +284,68 @@ def train(args):
                 #depth=torch.where(depth>torch.mean(depth)*4,torch.mean(accurate)*4,depth)
                 #exit()
                 # loss.backward()
+                if args.visdom:
+                    if iterative_count>0:
+                        depth = segments.data.cpu().numpy().astype('float32')
+                        depth = depth[0, :, :]
+                        #depth=np.where(depth>np.max(ground),np.max(ground),depth)
+                        #depth =np.where(ground>0, np.abs((np.reshape(depth, [228, 304]).astype('float32'))/(np.max(depth)+0.001)-ground),0)
+                        depth=depth/(np.max(depth)+0.001)
+                        vis.image(
+                            depth,
+                            opts=dict(title='depth!', caption='depth.'),
+                            win=depth_feature_refine_window,
+                        )
+                        accurate = accurate.data.cpu().numpy().astype('float32')
+                        accurate = accurate[0,...]
+                        accurate = (np.reshape(accurate, [228, 304]).astype('float32'))/(np.max(accurate)+0.001)
+                        vis.image(
+                            accurate,
+                            opts=dict(title='accurate!', caption='accurate.'),
+                            win=accurate_window,
+                        )
+                    else:
+                        ground=labels.data.cpu().numpy().astype('float32')
+                        ground = ground[0, :, :]
+                        ground = (np.reshape(ground, [228, 304]).astype('float32'))/(np.max(ground)+0.001)
+                        vis.image(
+                            ground,
+                            opts=dict(title='ground!', caption='ground.'),
+                            win=ground_window,
+                        )
+
+
+                        depth = segments.data.cpu().numpy().astype('float32')
+                        depth = depth[0, :, :]
+                        #depth=np.where(depth>np.max(ground),np.max(ground),depth)
+                        #depth =np.where(ground>0, np.abs((np.reshape(depth, [228, 304]).astype('float32'))/(np.max(depth)+0.001)-ground),0)
+                        depth=depth/(np.max(depth)+0.001)
+                        vis.image(
+                            depth,
+                            opts=dict(title='depth!', caption='depth.'),
+                            win=depth_feature_refine_window,
+                        )
+                        accurate = accurate.data.cpu().numpy().astype('float32')
+                        accurate = accurate[0,...]
+                        accurate = (np.reshape(accurate, [228, 304]).astype('float32'))/(np.max(accurate)+0.001)
+                        vis.image(
+                            accurate,
+                            opts=dict(title='accurate!', caption='accurate.'),
+                            win=accurate_window,
+                        )  
+                        image=image.data.cpu().numpy().astype('float32')
+                        image = image[0,...]
+                        #image=image[0,...]
+                        #print(image.shape,np.min(image))
+                        image = np.reshape(image, [3,228, 304]).astype('float32')
+                        vis.image(
+                            image,
+                            opts=dict(title='image!', caption='image.'),
+                            win=image_window,
+                        ) 
+                if torch.sum(mask)<1000:
+                    loss.backward()
+                    break
                 # mean_loss_ave.append(lin.item())
                 # optimizer.step()
                 # break
@@ -285,6 +355,7 @@ def train(args):
                 #     mean_loss_ave.append(lin.item())
                 #     optimizer.step()
                 #     break
+
                 if (lin<=mean_loss) :
                     #loss_bp=loss*torch.pow(100,-(mean_loss-lin)/mean_loss)
                     #loss_bp=loss*zero
@@ -345,54 +416,55 @@ def train(args):
                         win=lin_window,
                         update='append')
                     #labels=F.interpolate(labels,scale_factor=1/2,mode='bilinear',align_corners=False).squeeze()
-                    ground=labels.data.cpu().numpy().astype('float32')
-                    ground = ground[0, :, :]
-                    ground = (np.reshape(ground, [228, 304]).astype('float32'))/(np.max(ground)+0.001)
-                    vis.image(
-                        ground,
-                        opts=dict(title='ground!', caption='ground.'),
-                        win=ground_window,
-                    )
+                    # ground=labels.data.cpu().numpy().astype('float32')
+                    # ground = ground[0, :, :]
+                    # ground = (np.reshape(ground, [228, 304]).astype('float32'))/(np.max(ground)+0.001)
+                    # vis.image(
+                    #     ground,
+                    #     opts=dict(title='ground!', caption='ground.'),
+                    #     win=ground_window,
+                    # )
 
 
-                    depth = accurate.data.cpu().numpy().astype('float32')
-                    depth = depth[0, :, :]
-                    #depth=np.where(depth>np.max(ground),np.max(ground),depth)
-                    depth =np.where(ground>0, np.abs((np.reshape(depth, [228, 304]).astype('float32'))/(np.max(depth)+0.001)-ground),0)
-                    depth=depth/(np.max(depth)+0.001)
-                    vis.image(
-                        depth,
-                        opts=dict(title='depth!', caption='depth.'),
-                        win=depth_feature_refine_window,
-                    )
-                    accurate = accurate.data.cpu().numpy().astype('float32')
-                    accurate = accurate[0,...]
-                    accurate = (np.reshape(accurate, [228, 304]).astype('float32'))/(np.max(accurate)+0.001)
-                    vis.image(
-                        accurate,
-                        opts=dict(title='accurate!', caption='accurate.'),
-                        win=accurate_window,
-                    )  
-                    image=image.data.cpu().numpy().astype('float32')
-                    image = image[0,...]
-                    #image=image[0,...]
-                    #print(image.shape,np.min(image))
-                    image = np.reshape(image, [3,228, 304]).astype('float32')
-                    vis.image(
-                        image,
-                        opts=dict(title='image!', caption='image.'),
-                        win=image_window,
-                    ) 
+                    # depth = segments.data.cpu().numpy().astype('float32')
+                    # depth = depth[0, :, :]
+                    # #depth=np.where(depth>np.max(ground),np.max(ground),depth)
+                    # #depth =np.where(ground>0, np.abs((np.reshape(depth, [228, 304]).astype('float32'))/(np.max(depth)+0.001)-ground),0)
+                    # depth=depth/(np.max(depth)+0.001)
+                    # vis.image(
+                    #     depth,
+                    #     opts=dict(title='depth!', caption='depth.'),
+                    #     win=depth_feature_refine_window,
+                    # )
+                    # accurate = accurate.data.cpu().numpy().astype('float32')
+                    # accurate = accurate[0,...]
+                    # accurate = (np.reshape(accurate, [228, 304]).astype('float32'))/(np.max(accurate)+0.001)
+                    # vis.image(
+                    #     accurate,
+                    #     opts=dict(title='accurate!', caption='accurate.'),
+                    #     win=accurate_window,
+                    # )  
+                    # image=image.data.cpu().numpy().astype('float32')
+                    # image = image[0,...]
+                    # #image=image[0,...]
+                    # #print(image.shape,np.min(image))
+                    # image = np.reshape(image, [3,228, 304]).astype('float32')
+                    # vis.image(
+                    #     image,
+                    #     opts=dict(title='image!', caption='image.'),
+                    #     win=image_window,
+                    # ) 
             loss_rec.append([i+epoch*train_len,torch.Tensor([loss.item()]).unsqueeze(0).cpu()])
             loss_error+=loss.item()
 
             loss_error_d+=log_d.item()
-            print("data [%d/%d/%d/%d] Loss: %.4f lin: %.4f lin_d:%.4f loss_d:%.4f loss_a:%.4f loss_var:%.4f loss_dis:%.4f loss_reg: %.4f" % (i,train_len, epoch, args.n_epoch,loss.item(),lin.item(),lin_d.item(), loss_d.item(),loss_a.item(), \
-                torch.sum(loss_v).item(),torch.sum((loss_a-loss_d)).item(),0.001*torch.sum(loss_reg).item()))
+            print("data [%d/%d/%d/%d] Loss: %.4f lin: %.4f lin_d:%.4f loss_d:%.4f loss_a:%.4f loss_var:%.4f loss_dis:%.4f loss_re: %.4f" % \
+                (i,train_len, epoch, args.n_epoch,loss.item(),lin.item(),lin_d.item(), loss_d.item(),loss_a.item(), \
+                torch.sum(loss_var).item(),torch.sum((loss_dis)).item(),torch.sum(loss_re).item()))
 
             
             
-            if (i+1)%(1000)==0:
+            if (i+1)%(3000)==0:
                 mean_loss=np.mean(mean_loss_ave)
                 mean_loss_ave=[]
                 print("mean_loss:%.4f"%(mean_loss))
@@ -405,16 +477,16 @@ def train(args):
                 loss_log_ave=[]
                 for i_val, (images_val, labels_val,regions,segments,images) in tqdm(enumerate(valloader)):
                     #print(r'\n')
-                    images_val = Variable(images_val.cuda(0), requires_grad=False)
-                    labels_val = Variable(labels_val.cuda(0), requires_grad=False)
-                    segments_val = Variable(segments.cuda(0), requires_grad=False)
-                    regions_val = Variable(regions.cuda(0), requires_grad=False)
+                    images_val = Variable(images_val.cuda(2), requires_grad=False)
+                    labels_val = Variable(labels_val.cuda(2), requires_grad=False)
+                    #segments_val = Variable(segments.cuda(2), requires_grad=False)
+                    regions_val = Variable(regions.cuda(2), requires_grad=False)
 
                     with torch.no_grad():
-                        #depth,loss_var,loss_dis,loss_reg = model(images_val,segments_val,1,'test')
-                        depth,accurate,loss_var,loss_dis,loss_reg = model(images_val,regions_val,labels_val,0,'eval')
+                        #depth,loss_var,loss_dis,segments = model(images_val,segments_val,1,'test')
+                        depth,accurate,loss_var,loss_dis,segments = model(images_val,regions_val,labels_val,0,'eval')
                         # loss_d=berhu(depth,labels_val)
-                        # loss=torch.sum(loss_var)+torch.sum(loss_dis)+0.001*torch.sum(loss_reg)
+                        # loss=torch.sum(loss_var)+torch.sum(loss_dis)+0.001*torch.sum(segments)
                         # loss=loss+loss_d
                         accurate=torch.where(accurate>beta,beta*one,accurate)
                         accurate=torch.where(accurate<alpha,alpha*one,accurate)
@@ -438,7 +510,7 @@ def train(args):
                         #log_d=torch.sqrt(torch.mean(torch.pow(torch.log10(accurate[mask])-torch.log10(labels_val[mask]),2)))
                         #print(torch.min(depth),torch.max(depth),torch.mean(depth))
                         log_d=torch.mean(torch.sum(torch.where(mask>0,torch.abs(torch.log10(accurate)-torch.log10(labels_val)),mask).view(labels_val.shape[0],-1),dim=-1)/torch.sum(mask.view(labels_val.shape[0],-1),dim=-1))
-
+                        print('masks_num:%d'%torch.max(segments))
                         #print(torch.sqrt(torch.sum(torch.where(mask>0,torch.pow(accurate-labels_val,2),mask).view(labels_val.shape[0],-1),dim=-1)/torch.sum(mask.view(labels_val.shape[0],-1),dim=-1)))
                         #log_d=torch.sum(torch.sum(torch.where(mask>0,torch.abs(torch.log10(accurate)-torch.log10(labels_val)),mask).view(labels_val.shape[0],-1),dim=-1)/torch.sum(mask.view(labels_val.shape[0],-1),dim=-1))
                         #print(torch.sqrt(torch.sum(torch.where(mask>0,torch.pow(torch.log10(accurate)-torch.log10(labels_val),2),mask).view(labels_val.shape[0],-1),dim=-1)/torch.sum(mask.view(labels_val.shape[0],-1),dim=-1)))
@@ -464,62 +536,62 @@ def train(args):
                         #print(loss_ave[-1])
                         #print(torch.max(torch.abs(accurate[mask]-labels_val[mask])).item(),torch.min(torch.abs(accurate[mask]-labels_val[mask])).item())
                         print("error=%.4f,error_d=%.4f,error_log=%.4f"%(lin.item(),lin_d.item(),log_d.item()))
-                        # print("loss_d=%.4f loss_var=%.4f loss_dis=%.4f loss_reg=%.4f"%(torch.sum(lin).item()/4,torch.sum(loss_var).item()/4, \
-                        #             torch.sum(loss_dis).item()/4,0.001*torch.sum(loss_reg).item()/4))
+                        # print("loss_d=%.4f loss_var=%.4f loss_dis=%.4f segments=%.4f"%(torch.sum(lin).item()/4,torch.sum(loss_var).item()/4, \
+                        #             torch.sum(loss_dis).item()/4,0.001*torch.sum(segments).item()/4))
                     if args.visdom:
                         vis.line(
                             X=torch.ones(1).cpu() * i_val+torch.ones(1).cpu() *test*654/args.batch_size,
                             Y=lin.item()*torch.ones(1).cpu(),
                             win=error_window,
                             update='append')
-                        labels_val=labels_val.unsqueeze(1)
-                        labels_val=F.interpolate(labels_val,scale_factor=1/2,mode='nearest').squeeze()
-                        accurate=accurate.unsqueeze(1)
-                        accurate=F.interpolate(accurate,scale_factor=1/2,mode='nearest').squeeze()
-                        depth=depth.unsqueeze(1)
-                        depth=F.interpolate(depth,scale_factor=1/2,mode='nearest').squeeze()
-                        ground=labels_val.data.cpu().numpy().astype('float32')
-                        ground = ground[0, :, :]
-                        ground = (np.reshape(ground, [228, 304]).astype('float32'))/(np.max(ground)+0.001)
-                        vis.image(
-                            ground,
-                            opts=dict(title='ground!', caption='ground.'),
-                            win=ground_window,
-                        )
+                #         labels_val=labels_val.unsqueeze(1)
+                #         labels_val=F.interpolate(labels_val,scale_factor=1/2,mode='nearest').squeeze()
+                #         accurate=accurate.unsqueeze(1)
+                #         accurate=F.interpolate(accurate,scale_factor=1/2,mode='nearest').squeeze()
+                #         depth=depth.unsqueeze(1)
+                #         depth=F.interpolate(depth,scale_factor=1/2,mode='nearest').squeeze()
+                #         ground=labels_val.data.cpu().numpy().astype('float32')
+                #         #ground = ground[0, :, :]
+                #         ground = (np.reshape(ground, [228, 304]).astype('float32'))/(np.max(ground)+0.001)
+                #         vis.image(
+                #             ground,
+                #             opts=dict(title='ground!', caption='ground.'),
+                #             win=ground_window,
+                #         )
                     
 
-                        depth = accurate.data.cpu().numpy().astype('float32')
-                        depth = depth[0, :, :]
-                        #depth=np.where(depth>np.max(ground),np.max(ground),depth)
-                        depth =np.where(ground>0, np.abs((np.reshape(depth, [228, 304]).astype('float32'))/(np.max(depth)+0.001)-ground),0)
-                        depth=depth/(np.max(depth)+0.001)
-                        vis.image(
-                            depth,
-                            opts=dict(title='depth!', caption='depth.'),
-                            win=depth_feature_refine_window,
-                        )
+                #         depth = segments.data.cpu().numpy().astype('float32')
+                #         #depth = depth[0, :, :]
+                #         #depth=np.where(depth>np.max(ground),np.max(ground),depth)
+                #         #depth =np.where(ground>0, np.abs((np.reshape(depth, [228, 304]).astype('float32'))/(np.max(depth)+0.001)-ground),0)
+                #         depth=depth/(np.max(depth)+0.001)
+                #         vis.image(
+                #             depth,
+                #             opts=dict(title='depth!', caption='depth.'),
+                #             win=depth_feature_refine_window,
+                #         )
 
-                        accurate = accurate.data.cpu().numpy().astype('float32')
-                        accurate = accurate[0,...]
-                        accurate = (np.reshape(accurate, [228, 304]).astype('float32'))
+                #         accurate = accurate.data.cpu().numpy().astype('float32')
+                #         #accurate = accurate[0,...]
+                #         accurate = (np.reshape(accurate, [228, 304]).astype('float32'))
 
-                        accurate=accurate/(np.max(accurate)+0.001)
-                        vis.image(
-                            accurate,
-                            opts=dict(title='accurate!', caption='accurate.'),
-                            win=accurate_window,
-                        ) 
-                        image=images.data.cpu().numpy().astype('float32')
-                        image = image[0,...]
-                        #image=image[0,...]
-                        #print(image.shape,np.min(image))
-                        image = np.reshape(image, [3,228, 304]).astype('float32')
-                        vis.image(
-                            image,
-                            opts=dict(title='image!', caption='image.'),
-                            win=image_window,
-                        )
-                model.train()
+                #         accurate=accurate/(np.max(accurate)+0.001)
+                #         vis.image(
+                #             accurate,
+                #             opts=dict(title='accurate!', caption='accurate.'),
+                #             win=accurate_window,
+                #         ) 
+                #         image=images.data.cpu().numpy().astype('float32')
+                #         #image = image[0,...]
+                #         #image=image[0,...]
+                #         #print(image.shape,np.min(image))
+                #         image = np.reshape(image, [3,228, 304]).astype('float32')
+                #         vis.image(
+                #             image,
+                #             opts=dict(title='image!', caption='image.'),
+                #             win=image_window,
+                #         )
+                # model.train()
                 #error=np.mean(loss_ave)
                 error=np.mean(loss_ave)
                 #error_d=np.mean(loss_d_ave)
@@ -571,16 +643,16 @@ def train(args):
             error_sum=0
             for i_val, (images_val, labels_val,regions,segments,images) in tqdm(enumerate(valloader)):
                 #print(r'\n')
-                images_val = Variable(images_val.cuda(0), requires_grad=False)
-                labels_val = Variable(labels_val.cuda(0), requires_grad=False)
-                segments_val = Variable(segments.cuda(0), requires_grad=False)
-                regions_val = Variable(regions.cuda(0), requires_grad=False)
+                images_val = Variable(images_val.cuda(2), requires_grad=False)
+                labels_val = Variable(labels_val.cuda(2), requires_grad=False)
+                #segments_val = Variable(segments.cuda(2), requires_grad=False)
+                regions_val = Variable(regions.cuda(2), requires_grad=False)
 
                 with torch.no_grad():
-                    #depth,loss_var,loss_dis,loss_reg = model(images_val,segments_val,1,'test')
-                    depth,accurate,loss_var,loss_dis,loss_reg = model(images_val,regions_val,labels_val,0,'eval')
+                    #depth,loss_var,loss_dis,segments = model(images_val,segments_val,1,'test')
+                    depth,accurate,loss_var,loss_dis,loss_re,segments = model(images_val,regions_val,labels_val,0,'eval')
                     # loss_d=berhu(depth,labels_val)
-                    # loss=torch.sum(loss_var)+torch.sum(loss_dis)+0.001*torch.sum(loss_reg)
+                    # loss=torch.sum(loss_var)+torch.sum(loss_dis)+0.001*torch.sum(segments)
                     # loss=loss+loss_d
                     accurate=torch.where(accurate>beta,beta*one,accurate)
                     accurate=torch.where(accurate<alpha,alpha*one,accurate)
@@ -591,7 +663,7 @@ def train(args):
                     depth=F.interpolate(depth,scale_factor=scale,mode='nearest').squeeze()
                     accurate=F.interpolate(accurate,scale_factor=scale,mode='nearest').squeeze()
                     labels_val=(labels_val[...,6*scale:-6*scale,8*scale:-8*scale]).view_as(depth)
-                    
+                    print('masks_num:%d'%torch.max(segments))
                     #accurate=torch.where(accurate>torch.mean(accurate)*4,torch.mean(accurate),accurate)
                     mask=(labels_val>alpha)&(labels_val<beta)
                     mask=mask.float().detach()
@@ -630,61 +702,61 @@ def train(args):
                     #print(loss_ave[-1])
                     #print(torch.max(torch.abs(accurate[mask]-labels_val[mask])).item(),torch.min(torch.abs(accurate[mask]-labels_val[mask])).item())
                     print("error=%.4f,error_d=%.4f,error_log=%.4f"%(lin.item(),lin_d.item(),log_d.item()))
-                    # print("loss_d=%.4f loss_var=%.4f loss_dis=%.4f loss_reg=%.4f"%(torch.sum(lin).item()/4,torch.sum(loss_var).item()/4, \
-                    #             torch.sum(loss_dis).item()/4,0.001*torch.sum(loss_reg).item()/4))
+                    # print("loss_d=%.4f loss_var=%.4f loss_dis=%.4f segments=%.4f"%(torch.sum(lin).item()/4,torch.sum(loss_var).item()/4, \
+                    #             torch.sum(loss_dis).item()/4,0.001*torch.sum(segments).item()/4))
                 if args.visdom:
                     vis.line(
                         X=torch.ones(1).cpu() * i_val+torch.ones(1).cpu() *test*654/args.batch_size,
                         Y=lin.item()*torch.ones(1).cpu(),
                         win=error_window,
                         update='append')
-                    labels_val=labels_val.unsqueeze(1)
-                    labels_val=F.interpolate(labels_val,scale_factor=1/2,mode='nearest').squeeze()
-                    accurate=accurate.unsqueeze(1)
-                    accurate=F.interpolate(accurate,scale_factor=1/2,mode='nearest').squeeze()
-                    depth=depth.unsqueeze(1)
-                    depth=F.interpolate(depth,scale_factor=1/2,mode='nearest').squeeze()
-                    ground=labels_val.data.cpu().numpy().astype('float32')
-                    ground = ground[0, :, :]
-                    ground = (np.reshape(ground, [228, 304]).astype('float32'))/(np.max(ground)+0.001)
-                    vis.image(
-                        ground,
-                        opts=dict(title='ground!', caption='ground.'),
-                        win=ground_window,
-                    )
+                    # labels_val=labels_val.unsqueeze(1)
+                    # labels_val=F.interpolate(labels_val,scale_factor=1/2,mode='nearest').squeeze()
+                    # accurate=accurate.unsqueeze(1)
+                    # accurate=F.interpolate(accurate,scale_factor=1/2,mode='nearest').squeeze()
+                    # # segments=segments.unsqueeze(1)
+                    # # segments=F.interpolate(segments,scale_factor=1/2,mode='nearest').squeeze()
+                    # ground=labels_val.data.cpu().numpy().astype('float32')
+                    # #ground = ground[0, :, :]
+                    # ground = (np.reshape(ground, [228, 304]).astype('float32'))/(np.max(ground)+0.001)
+                    # vis.image(
+                    #     ground,
+                    #     opts=dict(title='ground!', caption='ground.'),
+                    #     win=ground_window,
+                    # )
                 
 
-                    depth = accurate.data.cpu().numpy().astype('float32')
-                    depth = depth[0, :, :]
-                    #depth=np.where(depth>np.max(ground),np.max(ground),depth)
-                    depth =np.where(ground>0, np.abs((np.reshape(depth, [228, 304]).astype('float32'))/(np.max(depth)+0.001)-ground),0)
-                    depth=depth/(np.max(depth)+0.001)
-                    vis.image(
-                        depth,
-                        opts=dict(title='depth!', caption='depth.'),
-                        win=depth_feature_refine_window,
-                    )
+                    # depth = segments.data.cpu().numpy().astype('float32')
+                    # #depth = depth[0, :, :]
+                    # #depth=np.where(depth>np.max(ground),np.max(ground),depth)
+                    # #depth =np.where(ground>0, np.abs((np.reshape(depth, [228, 304]).astype('float32'))/(np.max(depth)+0.001)-ground),0)
+                    # depth=depth/(np.max(depth)+0.001)
+                    # vis.image(
+                    #     depth,
+                    #     opts=dict(title='depth!', caption='depth.'),
+                    #     win=depth_feature_refine_window,
+                    # )
 
-                    accurate = accurate.data.cpu().numpy().astype('float32')
-                    accurate = accurate[0,...]
-                    accurate = (np.reshape(accurate, [228, 304]).astype('float32'))
+                    # accurate = accurate.data.cpu().numpy().astype('float32')
+                    # #accurate = accurate[0,...]
+                    # accurate = (np.reshape(accurate, [228, 304]).astype('float32'))
 
-                    accurate=accurate/(np.max(accurate)+0.001)
-                    vis.image(
-                        accurate,
-                        opts=dict(title='accurate!', caption='accurate.'),
-                        win=accurate_window,
-                    ) 
-                    image=images.data.cpu().numpy().astype('float32')
-                    image = image[0,...]
-                    #image=image[0,...]
-                    #print(image.shape,np.min(image))
-                    image = np.reshape(image, [3,228, 304]).astype('float32')
-                    vis.image(
-                        image,
-                        opts=dict(title='image!', caption='image.'),
-                        win=image_window,
-                    ) 
+                    # accurate=accurate/(np.max(accurate)+0.001)
+                    # vis.image(
+                    #     accurate,
+                    #     opts=dict(title='accurate!', caption='accurate.'),
+                    #     win=accurate_window,
+                    # ) 
+                    # image=images.data.cpu().numpy().astype('float32')
+                    # #image = image[0,...]
+                    # #image=image[0,...]
+                    # #print(image.shape,np.min(image))
+                    # image = np.reshape(image, [3,228, 304]).astype('float32')
+                    # vis.image(
+                    #     image,
+                    #     opts=dict(title='image!', caption='image.'),
+                    #     win=image_window,
+                    # ) 
             #error=np.mean(loss_ave)
             error=np.mean(loss_ave)
             #error_d=np.mean(loss_d_ave)
@@ -714,7 +786,7 @@ def train(args):
                      'optimizer_state': optimizer.state_dict(), 
                      'error': error,
                      'mean_loss':mean_loss,}
-            torch.save(state, "depth_feature_refine_{}_{}_{}_ceoarse_model.pkl".format(
+            torch.save(state, "depth_feature_refine_{}_{}_{}_coarse_model.pkl".format(
                 args.arch, args.dataset,str(epoch)))
             print('save success')
 
@@ -739,9 +811,9 @@ if __name__ == '__main__':
                         help='Learning Rate')
     parser.add_argument('--feature_scale', nargs='?', type=int, default=1,
                         help='Divider for # of features to use')
-    parser.add_argument('--resume', nargs='?', type=str, default='/home/lidong/Documents/RSCFN/depth_feature_refine_rsn_cluster_nyu_43_0.54488176_coarse_best_model.pkl',
-                        help='Path to previous saved model to restart from /home/lidong/Documents/RSCFN/depth_feature_refine_rsn_cluster_nyu_4_0.60618377_coarse_best_model.pkl')
-    parser.add_argument('--visdom', nargs='?', type=bool, default=False,
+    parser.add_argument('--resume', nargs='?', type=str, default='/home/lidong/Documents/RSCFN/depth_feature_refine_rsn_cluster_nyu_12_0.5556589_coarse_best_model.pkl',
+                        help='Path to previous saved model to restart from /home/lidong/Documents/RSCFN/depth_feature_refine_rsn_cluster_nyu2_10_0.54780406_coarse_best_model.pkl')
+    parser.add_argument('--visdom', nargs='?', type=bool, default=True,
                         help='Show visualization(s) on visdom | False by  default')
     args = parser.parse_args()
     train(args)
